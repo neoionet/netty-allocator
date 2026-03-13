@@ -77,7 +77,7 @@
     <name>Netty-Allocator</name>
     <url>https://github.com/neoionet/netty-allocator</url>
     <description>
-        A high-performance memory allocator for Netty, implemented as a Java port of the mimalloc allocator.
+        A high-performance Java port of the mimalloc memory allocator, specifically tailored and optimized for Netty.
     </description>
 
     <licenses>
