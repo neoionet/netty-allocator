@@ -29,10 +29,16 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
     private final MiMallocByteBufAllocator direct;
     private final MiMallocByteBufAllocator heap;
 
+    /**
+     * Creates a new instance of {@code MiByteBufAllocator} with the default settings.
+     */
     public MiByteBufAllocator() {
         this(!PlatformDependent.isExplicitNoPreferDirect());
     }
 
+    /**
+     * Creates a new instance of {@code MiByteBufAllocator} with the specified preference for direct buffers.
+     */
     public MiByteBufAllocator(boolean preferDirect) {
         super(preferDirect);
         direct = new MiMallocByteBufAllocator(new DirectChunkAllocator(this));
