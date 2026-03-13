@@ -34,7 +34,7 @@ Add the following dependencies to your `pom.xml`:
     <dependencies>
         <dependency>
             <groupId>io.github.neoionet</groupId>
-            <artifactId>netty-allocator</artifactId>
+            <artifactId>mimalloc</artifactId>
             <version>1.0.0-SNAPSHOT</version>
         </dependency>
         <dependency>
