@@ -27,7 +27,7 @@ A high-performance Java port of the **mimalloc** allocator, tailored for **Netty
 
 ## 📖 How to use
 
-### Maven
+### 1. Maven dependencies
 Add the following dependencies to your `pom.xml`:
 
 ```xml
@@ -50,7 +50,6 @@ Add the following dependencies to your `pom.xml`:
     </dependencies>
 ```
 
-### Quick start
 If you want to use the mimalloc allocator within your server or client transport, ensure the `netty-transport` dependency is included in your project as well:
 ```xml
     <dependencies>
@@ -61,13 +60,15 @@ If you want to use the mimalloc allocator within your server or client transport
         </dependency>
     </dependencies>
 ```
-#### 1. Initialize Allocator
+
+### 2. Quick start
+#### 2.1. Initialize Allocator
 ```java
 // Create an instance of the mimalloc-based allocator.
 ByteBufAllocator miMallocAllocator = new MiByteBufAllocator();
 ```
 
-#### 2. Apply to Server
+#### 2.2. Apply to Server
 ```java
 ServerBootstrap b = new ServerBootstrap();
 b.group(bossGroup, workerGroup)
@@ -77,7 +78,7 @@ b.group(bossGroup, workerGroup)
  ...
 ```
 
-#### 3. Apply to Client
+#### 2.3. Apply to Client
 ```java
 Bootstrap b = new Bootstrap();
 b.group(group)
