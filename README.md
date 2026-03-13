@@ -40,12 +40,12 @@ Add the following dependencies to your `pom.xml`:
         <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty-common</artifactId>
-            <scope>4.2.10.Final</scope>
+            <version>4.2.10.Final</version>
         </dependency>
         <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty-buffer</artifactId>
-            <scope>4.2.10.Final</scope>
+            <version>4.2.10.Final</version>
         </dependency>
     </dependencies>
 ```
