@@ -25,7 +25,7 @@ A high-performance Java port of the **mimalloc** allocator, tailored for **Netty
 
 ---
 
-## 📦 How to use
+## 📖 How to use
 
 ### Maven
 Add the following dependencies to your `pom.xml`:
