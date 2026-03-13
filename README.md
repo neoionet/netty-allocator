@@ -68,7 +68,15 @@ If you want to use the mimalloc allocator within your server or client transport
 ByteBufAllocator miMallocAllocator = new MiByteBufAllocator();
 ```
 
-#### 2.2. Apply to Server
+#### 2.2. Simple allocation:
+```java
+ByteBuf buf = miMallocAllocator.directBuffer();
+buf.writeLong(123);
+System.out.println(buf.readLong()); // print 123.
+buf.release();
+```
+
+#### 2.3. Apply to Server
 ```java
 ServerBootstrap b = new ServerBootstrap();
 b.group(bossGroup, workerGroup)
@@ -78,7 +86,7 @@ b.group(bossGroup, workerGroup)
  ...
 ```
 
-#### 2.3. Apply to Client
+#### 2.4. Apply to Client
 ```java
 Bootstrap b = new Bootstrap();
 b.group(group)
