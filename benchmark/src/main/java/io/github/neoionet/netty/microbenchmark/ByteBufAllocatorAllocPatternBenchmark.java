@@ -256,13 +256,11 @@ public class ByteBufAllocatorAllocPatternBenchmark {
         sizesArray = sizePattern.create();
     }
 
-    @Threads(16)
     @Benchmark
     public void directAllocation(AllocationPatternState state, Blackhole blackhole) {
         state.performDirectAllocation(blackhole);
     }
 
-    @Threads(16)
     @Benchmark
     public void heapAllocation(AllocationPatternState state, Blackhole blackhole) {
         state.performHeapAllocation(blackhole);
