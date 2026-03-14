@@ -2213,7 +2213,6 @@ final class MiMallocByteBufAllocator {
         public ByteBuf capacity(int newCapacity) {
             checkNewCapacity(newCapacity);
             if (length <= newCapacity && newCapacity <= maxFastCapacity) {
-                ensureAccessible();
                 length = newCapacity;
                 return this;
             }
