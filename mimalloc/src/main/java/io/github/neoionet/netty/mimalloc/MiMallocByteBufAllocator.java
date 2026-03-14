@@ -198,13 +198,13 @@ final class MiMallocByteBufAllocator {
         for (SharedHeapWrap sharedHeapWrap : this.sharedHeapWraps) {
             lock = sharedHeapWrap.lock;
             lockStamp = lock.writeLock();
-            heap = sharedHeapWrap.heap;
-            if (heap != null) {
-                try {
+            try {
+                heap = sharedHeapWrap.heap;
+                if (heap != null) {
                     heap.heapCollect(ABANDON);
-                } finally {
-                    lock.unlockWrite(lockStamp);
                 }
+            } finally {
+                lock.unlockWrite(lockStamp);
             }
         }
     }
