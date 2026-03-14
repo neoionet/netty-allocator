@@ -1,7 +1,8 @@
 # Netty mimalloc allocator
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Java Version](https://img.shields.io/badge/Java-1.8%2B-orange.svg)](https://www.oracle.com/java/technologies/javase-jdk8-downloads.html)
+[![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Java Version](https://img.shields.io/badge/Java-1.8%2B-green.svg)](https://www.oracle.com/java/technologies/javase-jdk8-downloads.html)
+[![Virtual Thread Friendly](https://img.shields.io/badge/Virtual_Thread-Friendly-green.svg)](https://docs.oracle.com/en/java/javase/21/core/virtual-threads.html)
 [![Netty Version](https://img.shields.io/badge/Netty-4.2.10.Final%2B-green.svg)](https://netty.io/)
 
 A high-performance Java port of the **mimalloc** allocator, tailored for **Netty**.
@@ -13,7 +14,7 @@ A high-performance Java port of the **mimalloc** allocator, tailored for **Netty
 * **Mimalloc Powered**: Leverages mimalloc's advanced allocation strategies (free lists, local shards).
 * **Tailored for Netty**: Specifically designed to handle Netty's `ByteBuf` allocation with minimal overhead.
 * **High Throughput**: Optimized for multi-threaded network environments to ensure high and stable performance.
-
+* **Virtual Thread Friendly**: Optimized for Project Loom, preventing the memory explosion typically caused by massive `ThreadLocal` usage in virtual thread scenarios.
 ---
 
 ## 🛠 Requirements
