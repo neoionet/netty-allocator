@@ -141,7 +141,7 @@ public class ByteBufAllocatorAllocPatternBenchmark {
             this.enableReadWrite = benchmark.enableReadWrite;
             releaseIndexes = new int[benchmark.MAX_LIVE_BUFFERS];
             sizes = new int[MathUtil.findNextPositivePowerOfTwo(benchmark.sizesArray.length)];
-            SplittableRandom rand = new SplittableRandom(Thread.currentThread().getId() * 0x9e3779b97f4a7c15L);
+            SplittableRandom rand = new SplittableRandom(42L);
             // Pre-generate the to be released index.
             for (int i = 0; i < releaseIndexes.length; i++) {
                 releaseIndexes[i] = i;
