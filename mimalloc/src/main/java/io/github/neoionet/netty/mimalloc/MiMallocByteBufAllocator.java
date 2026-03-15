@@ -765,8 +765,7 @@ final class MiMallocByteBufAllocator {
             }
             Object result = null;
             Segment segment;
-            while (maxTries > 0 && (segment = this.allocator.abandonedSegmentDeque.poll()) != null) {
-                maxTries--;
+            while (maxTries-- > 0 && (segment = this.allocator.abandonedSegmentDeque.poll()) != null) {
                 this.allocator.abandonedSegmentCount.decrementAndGet();
                 segment.abandonedVisits++;
                 // Try to free up pages (due to concurrent frees).
