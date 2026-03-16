@@ -99,9 +99,7 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
 
         @Override
         public UnpooledDirectByteBuf allocate(int initialCapacity, int maxCapacity) {
-            return PlatformDependent.hasUnsafe() ?
-                    new MiUnpooledUnsafeNoCleanerDirectByteBuf(allocator, initialCapacity, maxCapacity) :
-                    new MiUnpooledDirectByteBuf(allocator, initialCapacity, maxCapacity);
+            return MiByteBufUtil.newDirectByteBuf(allocator, initialCapacity, maxCapacity);
         }
     }
 }

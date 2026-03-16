@@ -18,6 +18,7 @@ package io.github.neoionet.netty.mimalloc;
 import io.netty.buffer.AbstractByteBuf;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
+import io.netty.buffer.UnpooledDirectByteBuf;
 import io.netty.util.AsciiString;
 import io.netty.util.concurrent.FastThreadLocal;
 import io.netty.util.concurrent.FastThreadLocalThread;
@@ -347,6 +348,23 @@ final class MiByteBufUtil {
             out.write(in, inOffset, len);
             outLen -= len;
         } while (outLen > 0);
+    }
+
+    /**
+     * Allocates direct buffers for chunks used in the pooling allocators.
+     * @param alloc The allocator we're creating a chunk for.
+     * @param initialCapacity The initial capacity.
+     * @param maxCapacity The max capacity.
+     * @return The {@link UnpooledDirectByteBuf} with the chunk memory.
+     */
+    static UnpooledDirectByteBuf newDirectByteBuf(ByteBufAllocator alloc, int initialCapacity, int maxCapacity) {
+        if (PlatformDependent.hasUnsafe()) {
+            if (PlatformDependent.useDirectBufferNoCleaner()) {
+                return new MiUnpooledUnsafeNoCleanerDirectByteBuf(alloc, initialCapacity, maxCapacity);
+            }
+            return new MiUnpooledUnsafeDirectByteBuf(alloc, initialCapacity, maxCapacity);
+        }
+        return new MiUnpooledDirectByteBuf(alloc, initialCapacity, maxCapacity);
     }
 
     private MiByteBufUtil() { }
