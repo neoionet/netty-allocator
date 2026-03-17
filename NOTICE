@@ -1,11 +1,11 @@
 This product contains a modified portion of 'Netty', an event-driven asynchronous network application framework.
   * LICENSE:
-    * copyright/LICENSE.netty (Apache License 2.0)
+    * licenses/LICENSE.netty (Apache License 2.0)
   * HOMEPAGE:
     * https://netty.io/
 
 This product contains a Java implementation derived from 'mimalloc', a compact general purpose allocator.
   * LICENSE:
-    * copyright/LICENSE.mimalloc (MIT License)
+    * licenses/LICENSE.mimalloc (MIT License)
   * HOMEPAGE:
     * https://microsoft.github.io/mimalloc/
