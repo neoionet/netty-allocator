@@ -33,11 +33,6 @@ class MiUnpooledUnsafeNoCleanerDirectByteBuf extends UnpooledUnsafeDirectByteBuf
     }
 
     @Override
-    protected CleanableDirectBuffer allocateDirectBuffer(int capacity) {
-        return PlatformDependent.allocateDirectBufferNoCleaner(capacity);
-    }
-
-    @Override
     protected ByteBuffer allocateDirect(int initialCapacity) {
         throw new UnsupportedOperationException();
     }
