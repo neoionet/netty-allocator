@@ -60,7 +60,9 @@ import java.util.function.Supplier;
 @Fork(value = 1, jvmArgs = {
         "-server",
         "-dsa", "-da",
-        "-Dio.netty.leakDetection.level=disabled"
+        "-Dio.netty.leakDetection.level=disabled",
+        "-Djmh.executor=CUSTOM",
+        "-Djmh.executor.class=io.github.neoionet.netty.microbenchmark.executor.FastThreadLocalThreadHarnessExecutor"
 })
 public class ByteBufAllocatorAllocPatternBenchmark {
 
