@@ -12,9 +12,9 @@ public class LogNormalDistributionPattern {
 
     public static final int[] FLATTENED_SIZE_ARRAY = new int[1 << 17];
     static {
-        LogNormalDistribution sizeDistribution =
-                new LogNormalDistribution(new Well19937c(42L), 7.5, 1.2,
-                        LogNormalDistribution.DEFAULT_INVERSE_ABSOLUTE_ACCURACY);
+        // TODO: consider using (7.0, 0.85), (6.9, 0.9)?
+        LogNormalDistribution sizeDistribution = new LogNormalDistribution(new Well19937c(42L),
+                7.5, 1.2, LogNormalDistribution.DEFAULT_INVERSE_ABSOLUTE_ACCURACY);
         for (int i = 0; i < FLATTENED_SIZE_ARRAY.length; i++) {
             long sampleSize = (long) sizeDistribution.sample();
             // Range: 8 Byte - 1 MiB.
