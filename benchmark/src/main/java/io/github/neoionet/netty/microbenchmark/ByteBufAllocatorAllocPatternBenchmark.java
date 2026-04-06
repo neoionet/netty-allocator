@@ -123,6 +123,9 @@ public class ByteBufAllocatorAllocPatternBenchmark {
             "2048",
             "4096",
             "8192",
+            8192 * 2 + "",
+            8192 * 4 + "",
+            8192 * 8 + "",
     })
     public int MAX_LIVE_BUFFERS;
 
