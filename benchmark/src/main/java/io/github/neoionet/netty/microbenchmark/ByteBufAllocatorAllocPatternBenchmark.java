@@ -178,11 +178,6 @@ public class ByteBufAllocatorAllocPatternBenchmark {
         }
 
         @CompilerControl(CompilerControl.Mode.DONT_INLINE)
-        private static void release(ByteBuf buf) {
-            buf.release();
-        }
-
-        @CompilerControl(CompilerControl.Mode.DONT_INLINE)
         private static ByteBuf allocateHeap(ByteBufAllocator allocator, int size) {
             return allocator.heapBuffer(size);
         }
@@ -200,17 +195,15 @@ public class ByteBufAllocatorAllocPatternBenchmark {
             ByteBuf oldBuf = buffers[releaseIndex];
             if (oldBuf != null) {
                 if (enableReadWrite) {
-                    oldBuf.readByte();
-                    blackhole.consume(oldBuf);
+                    blackhole.consume(oldBuf.readByte());
                 }
-                release(oldBuf);
+                blackhole.consume(oldBuf.release());
             }
             ByteBuf newBuf = allocateDirect(allocator, size);
             if (enableReadWrite) {
-                newBuf.writeByte(size);
+                blackhole.consume(newBuf.writeByte(size));
             }
             buffers[releaseIndex] = newBuf;
-            blackhole.consume(newBuf);
         }
 
         @CompilerControl(CompilerControl.Mode.DONT_INLINE)
@@ -221,17 +214,15 @@ public class ByteBufAllocatorAllocPatternBenchmark {
             ByteBuf oldBuf = buffers[releaseIndex];
             if (oldBuf != null) {
                 if (enableReadWrite) {
-                    oldBuf.readByte();
-                    blackhole.consume(oldBuf);
+                    blackhole.consume(oldBuf.readByte());
                 }
-                release(oldBuf);
+                blackhole.consume(oldBuf.release());
             }
             ByteBuf newBuf = allocateHeap(allocator, size);
             if (enableReadWrite) {
-                newBuf.writeByte(size);
+                blackhole.consume(newBuf.writeByte(size));
             }
             buffers[releaseIndex] = newBuf;
-            blackhole.consume(newBuf);
         }
 
         private static void releaseBufferArray(ByteBuf[] buffers) {
