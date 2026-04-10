@@ -50,8 +50,8 @@ import java.util.function.Supplier;
  * This is a modified portion of `io.netty.microbench.buffer.ByteBufAllocatorAllocPatternBenchmark`
  * from the <a href="https://github.com/netty/netty">netty</a> project.
  */
-@Warmup(iterations = 5, time = 5)
-@Measurement(iterations = 5, time = 5)
+@Warmup(iterations = 5, time = 1)
+@Measurement(iterations = 5, time = 1)
 @OutputTimeUnit(TimeUnit.NANOSECONDS)
 @State(Scope.Benchmark)
 @BenchmarkMode(Mode.AverageTime)
