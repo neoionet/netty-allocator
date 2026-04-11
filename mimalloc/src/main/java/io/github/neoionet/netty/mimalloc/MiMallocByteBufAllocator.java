@@ -909,10 +909,6 @@ final class MiMallocByteBufAllocator {
             return true;
         }
 
-//        private void segmentOsFree(Segment segment) {
-//            segment.deallocate();
-//        }
-
         // Called from segments when reclaiming abandoned pages.
         private void pageReclaim(Page page) {
             PageQueue pq = pageQueue(page.blockSize);
