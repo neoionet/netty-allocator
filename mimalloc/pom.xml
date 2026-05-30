@@ -6,9 +6,10 @@
     <parent>
         <groupId>io.github.neoionet</groupId>
         <artifactId>netty-allocator</artifactId>
-        <version>1.0.1-SNAPSHOT</version>
+        <version>1.0.1-Final-SNAPSHOT</version>
     </parent>
 
+    <name>mimalloc</name>
     <artifactId>mimalloc</artifactId>
     <packaging>jar</packaging>
 

@@ -6,9 +6,10 @@
     <parent>
         <groupId>io.github.neoionet</groupId>
         <artifactId>netty-allocator</artifactId>
-        <version>1.0.1-SNAPSHOT</version>
+        <version>1.0.1-Final-SNAPSHOT</version>
     </parent>
 
+    <name>benchmark</name>
     <artifactId>benchmark</artifactId>
     <packaging>jar</packaging>
 
@@ -92,6 +93,13 @@
                         </configuration>
                     </execution>
                 </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <configuration>
+                    <skipPublishing>true</skipPublishing>
+                </configuration>
             </plugin>
         </plugins>
     </build>
