@@ -11,7 +11,7 @@
 
     <groupId>io.github.neoionet</groupId>
     <artifactId>netty-allocator</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <version>1.0.1-SNAPSHOT</version>
     <packaging>pom</packaging>
     <modules>
         <module>mimalloc</module>
@@ -21,7 +21,7 @@
     <properties>
         <maven.compiler.release>8</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <netty.version>4.2.12.Final</netty.version>
+        <netty.version>4.2.14.Final</netty.version>
         <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
         <jmh.version>1.37</jmh.version>
         <maven-shade-plugin.version>3.6.1</maven-shade-plugin.version>

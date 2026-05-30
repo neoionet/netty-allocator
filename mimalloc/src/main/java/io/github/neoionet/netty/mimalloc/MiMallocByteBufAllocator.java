@@ -53,9 +53,9 @@ final class MiMallocByteBufAllocator {
 
     // 64 KiB
     private static final int SEGMENT_SLICE_SHIFT = 16;
-    // 4 MiB
-    private static final int DEFAULT_SEGMENT_SHIFT = SEGMENT_SLICE_SHIFT + 6;
-    // 4 MiB
+    // 32 MiB
+    private static final int DEFAULT_SEGMENT_SHIFT = SEGMENT_SLICE_SHIFT + 9;
+    // 32 MiB
     private static final int DEFAULT_SEGMENT_SIZE = 1 << DEFAULT_SEGMENT_SHIFT;
 
     // 64 KiB
@@ -74,7 +74,7 @@ final class MiMallocByteBufAllocator {
     // 64 KiB
     private static final int SEGMENT_SLICE_SIZE = 1 << SEGMENT_SLICE_SHIFT;
 
-    // 64
+    // 512 slices
     private static final int DEFAULT_SLICE_COUNT = DEFAULT_SEGMENT_SIZE / SEGMENT_SLICE_SIZE;
 
     // Small page size: 64 KiB, for small objects: [1 byte, 8 KiB]
@@ -95,7 +95,7 @@ final class MiMallocByteBufAllocator {
     // DEFAULT_SEGMENT_SIZE / 2
     private static final int LARGE_BLOCK_SIZE_MAX = DEFAULT_SEGMENT_SIZE >> 1;
 
-    private static final int SPAN_QUEUE_MAX_INDEX = 19;
+    private static final int SPAN_QUEUE_MAX_INDEX = 31;
 
     private static final boolean PAGE_USE_BEST_FIT_SEARCH = SystemPropertyUtil.getBoolean(
             "io.netty.allocator.mimalloc.pageUseBestFitSearch", true);
@@ -221,7 +221,13 @@ final class MiMallocByteBufAllocator {
             new SpanQueue(24, 13), new SpanQueue(28, 14),
             new SpanQueue(32, 15), new SpanQueue(40, 16),
             new SpanQueue(48, 17), new SpanQueue(56, 18),
-            new SpanQueue(64, SPAN_QUEUE_MAX_INDEX)
+            new SpanQueue(64, 19), new SpanQueue(80, 20),
+            new SpanQueue(96, 21), new SpanQueue(112, 22),
+            new SpanQueue(128, 23), new SpanQueue(160, 24),
+            new SpanQueue(192, 25), new SpanQueue(224, 26),
+            new SpanQueue(256, 27), new SpanQueue(320, 28),
+            new SpanQueue(384, 29), new SpanQueue(448, 30),
+            new SpanQueue(512, SPAN_QUEUE_MAX_INDEX)
         };
     }
 
@@ -285,9 +291,9 @@ final class MiMallocByteBufAllocator {
                     new PageQueue(2560, 41), new PageQueue(3072, 42),
                     new PageQueue(3584, 43), new PageQueue(4096, 44),
                     new PageQueue(5120, 45), new PageQueue(6144, 46),
-                    new PageQueue(7168, 47), new PageQueue(8192, 48), // 64KiB
+                    new PageQueue(7168, 47), new PageQueue(8192, 48), // 64 KiB
                     new PageQueue(10240, 49), new PageQueue(12288, 50),
-                    new PageQueue(14336, 51), new PageQueue(16384, 52), //128KiB
+                    new PageQueue(14336, 51), new PageQueue(16384, 52), // 128 KiB
                     // Large queue
                     new PageQueue(MEDIUM_BLOCK_WORD_SIZE_MAX + 1, PAGE_QUEUE_BIN_LARGE_INDEX),
                     // Full queue
@@ -717,7 +723,7 @@ final class MiMallocByteBufAllocator {
                 page = segmentsPageAlloc(blockSize, blockSize);
             } else if (blockSize <= MEDIUM_BLOCK_SIZE_MAX) { // <= 128 KiB
                 page = segmentsPageAlloc(MEDIUM_PAGE_SIZE, blockSize);
-            } else if (blockSize <= LARGE_BLOCK_SIZE_MAX) { // <= 2 MiB
+            } else if (blockSize <= LARGE_BLOCK_SIZE_MAX) { // <= LARGE_BLOCK_SIZE_MAX MiB
                 page = segmentsPageAlloc(blockSize, blockSize);
             } else {
                 page = segmentsHugePageAlloc(blockSize);
