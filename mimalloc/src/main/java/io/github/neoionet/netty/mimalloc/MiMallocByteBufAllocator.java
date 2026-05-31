@@ -15,6 +15,8 @@ import io.netty.util.internal.MathUtil;
 import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.SystemPropertyUtil;
 import io.netty.util.internal.UnstableApi;
+import io.netty.util.internal.logging.InternalLogger;
+import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -47,16 +49,15 @@ import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.Segment
 @UnstableApi
 final class MiMallocByteBufAllocator {
 
+    private static final InternalLogger logger = InternalLoggerFactory.getInstance(MiMallocByteBufAllocator.class);
     // 8 bytes
     private static final int WORD_SIZE = 8;
     private static final int WORD_SIZE_MASK = WORD_SIZE - 1;
 
     // 64 KiB
     private static final int SEGMENT_SLICE_SHIFT = 16;
-    // 32 MiB
-    private static final int DEFAULT_SEGMENT_SHIFT = SEGMENT_SLICE_SHIFT + 9;
-    // 32 MiB
-    private static final int DEFAULT_SEGMENT_SIZE = 1 << DEFAULT_SEGMENT_SHIFT;
+    private static final int SEGMENT_SHIFT = SEGMENT_SLICE_SHIFT + calculateSegmentShift();
+    private static final int SEGMENT_SIZE = 1 << SEGMENT_SHIFT;
 
     // 64 KiB
     private static final int SMALL_PAGE_SHIFT = SEGMENT_SLICE_SHIFT;
@@ -74,8 +75,7 @@ final class MiMallocByteBufAllocator {
     // 64 KiB
     private static final int SEGMENT_SLICE_SIZE = 1 << SEGMENT_SLICE_SHIFT;
 
-    // 512 slices
-    private static final int DEFAULT_SLICE_COUNT = DEFAULT_SEGMENT_SIZE / SEGMENT_SLICE_SIZE;
+    private static final int SLICE_COUNT = SEGMENT_SIZE / SEGMENT_SLICE_SIZE;
 
     // Small page size: 64 KiB, for small objects: [1 byte, 8 KiB]
     private static final int SMALL_PAGE_SIZE = 1 << SMALL_PAGE_SHIFT;
@@ -92,13 +92,13 @@ final class MiMallocByteBufAllocator {
     private static final int MEDIUM_BLOCK_SIZE_MAX = MEDIUM_PAGE_SIZE >> 2;
     private static final int MEDIUM_BLOCK_WORD_SIZE_MAX = MEDIUM_BLOCK_SIZE_MAX >> 3;
 
-    // DEFAULT_SEGMENT_SIZE / 2
-    private static final int LARGE_BLOCK_SIZE_MAX = DEFAULT_SEGMENT_SIZE >> 1;
+    // SEGMENT_SIZE / 2
+    private static final int LARGE_BLOCK_SIZE_MAX = SEGMENT_SIZE >> 1;
 
     private static final int SPAN_QUEUE_MAX_INDEX = 31;
 
     private static final boolean PAGE_USE_BEST_FIT_SEARCH = SystemPropertyUtil.getBoolean(
-            "io.netty.allocator.mimalloc.pageUseBestFitSearch", true);
+            "io.github.neoionet.allocator.mimalloc.pageUseBestFitSearch", true);
 
     private static final int MAX_PAGE_CANDIDATE_SEARCH = 4;
 
@@ -142,6 +142,25 @@ final class MiMallocByteBufAllocator {
             MathUtil.safeFindNextPositivePowerOfTwo(NettyRuntime.availableProcessors() * 2);
 
     private final AtomicInteger heapsScanLength;
+
+    private static int calculateSegmentShift() {
+        // Default 32 MiB.
+        int segmentSizeMib = SystemPropertyUtil.getInt("io.github.neoionet.allocator.mimalloc.segment.mib", 32);
+        int segmentSizeMibPower2 = MathUtil.safeFindNextPositivePowerOfTwo(segmentSizeMib);
+        switch (segmentSizeMibPower2) {
+            case 4: return 6; // 4 MiB
+            case 8: return 7; // 8 MiB
+            case 16: return 8; // 16 MiB
+            default: return 9; // 32 MiB
+        }
+    }
+
+    static {
+        if (logger.isDebugEnabled()) {
+            logger.error("-Dio.github.neoionet.allocator.mimalloc.segment.mib: {}", SEGMENT_SIZE / MiB);
+            logger.error("-Dio.github.neoionet.allocator.mimalloc.pageUseBestFitSearch: {}", PAGE_USE_BEST_FIT_SEARCH);
+        }
+    }
 
     MiMallocByteBufAllocator(ChunkAllocator chunkAllocator) {
         this.chunkAllocator = chunkAllocator;
@@ -1050,12 +1069,11 @@ final class MiMallocByteBufAllocator {
         private Segment segmentAllocNormal() {
             Segment segment;
             if (this.reservedNormalSegment == null) {
-                AbstractByteBuf chunk = this.allocator.newChunk(DEFAULT_SEGMENT_SIZE);
+                AbstractByteBuf chunk = this.allocator.newChunk(SEGMENT_SIZE);
                 if (chunk == null) {
                     return null; // Signal OOM
                 }
-                segment = new Segment(this.allocator, DEFAULT_SEGMENT_SIZE, DEFAULT_SLICE_COUNT, SEGMENT_NORMAL,
-                        chunk, this);
+                segment = new Segment(this.allocator, SEGMENT_SIZE, SLICE_COUNT, SEGMENT_NORMAL, chunk, this);
             } else {
                 segment = this.reservedNormalSegment;
                 this.reservedNormalSegment = null;
@@ -1205,7 +1223,7 @@ final class MiMallocByteBufAllocator {
         }
 
         private SpanQueue getSpanQueue(int sliceCount) {
-            assert sliceCount <= DEFAULT_SLICE_COUNT;
+            assert sliceCount <= SLICE_COUNT;
             int bin = spanQueueIndex(sliceCount);
             return this.segmentTld.spanQueues[bin];
         }
@@ -1776,7 +1794,7 @@ final class MiMallocByteBufAllocator {
         private Thread ownerThread;
         private LocalHeap ownerHeap;
         private final Span[] slices;
-        private final int sliceEntries; // Entries in the `slices` array, at most `DEFAULT_SLICE_COUNT`
+        private final int sliceEntries; // Entries in the `slices` array, at most `SLICE_COUNT`.
         private int usedPages; // count of pages in use
         // Abandoned pages (i.e. the original owning thread stopped) (`abandoned <= used`)
         private int abandonedPages;
