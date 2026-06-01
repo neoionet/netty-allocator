@@ -143,16 +143,18 @@ final class MiMallocByteBufAllocator {
 
     private final AtomicInteger heapsScanLength;
 
+    // Default segment size: 32 MiB.
+    // Possible segment size: {4, 8, 16, 32} MiB.
     private static int calculateSegmentShift() {
-        // Default 32 MiB.
-        int segmentSizeMib = SystemPropertyUtil.getInt("io.github.neoionet.allocator.mimalloc.segment.mib", 32);
-        int segmentSizeMibPower2 = MathUtil.safeFindNextPositivePowerOfTwo(segmentSizeMib);
-        switch (segmentSizeMibPower2) {
-            case 4: return 6; // 4 MiB
-            case 8: return 7; // 8 MiB
-            case 16: return 8; // 16 MiB
-            default: return 9; // 32 MiB
+        int segmentMibConf = SystemPropertyUtil.getInt("io.github.neoionet.allocator.mimalloc.segment.mib", 32);
+        int segmentMibNextPower2 = MathUtil.safeFindNextPositivePowerOfTwo(segmentMibConf);
+        if (segmentMibNextPower2 < 4) {
+            segmentMibNextPower2 = 4;
         }
+        if (segmentMibNextPower2 > 32) {
+            segmentMibNextPower2 = 32;
+        }
+        return Integer.numberOfTrailingZeros(segmentMibNextPower2) + 4;
     }
 
     static {
