@@ -17,7 +17,7 @@ A high-performance Java port of the **mimalloc** allocator, tailored for **Netty
 * **Virtual-Threads Friendly**: Optimized for Project Loom, preventing the memory explosion typically caused by massive `ThreadLocal` usage in virtual thread scenarios.
 ---
 
-## 🛠 Requirements
+## ⚓ Requirements
 
 | Requirement | Minimum Version |
 | :--- | :--- |
@@ -97,6 +97,18 @@ b.group(group)
 ```
 
 ---
+
+## 🔧 Configuration Properties
+
+*   **`-Dio.github.neoionet.allocator.mimalloc.segment.mib`**
+    *   **Description:** Sets the segment size in MiB.
+    *   **Allowed Values:** `4`, `8`, `16`, `32`.
+    *   **Default:** `32` MiB.
+
+*   **`-Dio.github.neoionet.allocator.mimalloc.pageUseBestFitSearch`**
+    *   **Description:** Determines the page search strategy. `true` stands for **best-fit**, `false` stands for **first-fit**.
+    *   **Allowed Values:** `true`, `false`.
+    *   **Default:** `true`.
 
 ## 🌟 Acknowledgments
 
