@@ -98,7 +98,7 @@ b.group(group)
 
 ---
 
-## 🔧 Advanced Configuration Properties
+## 🔧 Configuration Properties
 
 *   **`-Dio.github.neoionet.allocator.mimalloc.segment.mib`**
     *   **Description:** Sets the segment size in MiB.
