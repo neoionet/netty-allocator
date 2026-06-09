@@ -102,13 +102,13 @@ b.group(group)
 
 *   **`-Dio.github.neoionet.allocator.mimalloc.segment.mib`**
     *   **Description:** Sets the segment size in MiB.
-    *   **Allowed Values:** {`4`, `8`, `16`, `32`}.
-    *   **Default:** `32`.
+    *   **Allowed Values:** `4`, `8`, `16`, `32`
+    *   **Default:** `32`
 
 *   **`-Dio.github.neoionet.allocator.mimalloc.pageUseBestFitSearch`**
     *   **Description:** Determines the page search strategy. `true` stands for **best-fit**, `false` stands for **first-fit**.
-    *   **Allowed Values:** {`true`, `false`}.
-    *   **Default:** `true`.
+    *   **Allowed Values:** `true`, `false`
+    *   **Default:** `true`
 
 ## 🌟 Acknowledgments
 
