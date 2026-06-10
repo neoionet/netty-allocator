@@ -570,7 +570,7 @@ final class MiMallocByteBufAllocator {
             int fullPageMoveCount = 0;
             Page pageCandidate = null;
             Page page = pq.firstPage;
-            // Search through the pages in "next fit" order, which starts from the first non-full page.
+            // Search through the pages.
             while (page != null) {
                 Page next = page.nextPage;
                 page.pageFreeCollect(false);
