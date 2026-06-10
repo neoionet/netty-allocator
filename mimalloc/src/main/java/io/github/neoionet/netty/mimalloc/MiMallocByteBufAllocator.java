@@ -43,6 +43,7 @@ import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.Delayed
 import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.DelayedFlag.NEVER_DELAYED_FREE;
 import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.DelayedFlag.NO_DELAYED_FREE;
 import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.DelayedFlag.USE_DELAYED_FREE;
+import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.PageSearchStrategy.BEST;
 import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.SegmentKind.SEGMENT_HUGE;
 import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.SegmentKind.SEGMENT_NORMAL;
 
@@ -56,6 +57,7 @@ final class MiMallocByteBufAllocator {
 
     // 64 KiB
     private static final int SEGMENT_SLICE_SHIFT = 16;
+    private static final String SEGMENT_SIZE_PROP_KEY = "io.github.neoionet.allocator.mimalloc.segment.mib";
     private static final int SEGMENT_SHIFT = SEGMENT_SLICE_SHIFT + calculateSegmentShift();
     private static final int SEGMENT_SIZE = 1 << SEGMENT_SHIFT;
 
@@ -97,8 +99,9 @@ final class MiMallocByteBufAllocator {
 
     private static final int SPAN_QUEUE_MAX_INDEX = 31;
 
-    private static final boolean PAGE_USE_BEST_FIT_SEARCH = SystemPropertyUtil.getBoolean(
-            "io.github.neoionet.allocator.mimalloc.pageUseBestFitSearch", true);
+    private static final String PAGE_SEARCH_STRATEGY_PROP_KEY =
+            "io.github.neoionet.allocator.mimalloc.page.search.strategy";
+    private static final PageSearchStrategy PAGE_SEARCH_STRATEGY = getPageSearchStrategy();
 
     private static final int MAX_PAGE_CANDIDATE_SEARCH = 4;
 
@@ -144,9 +147,9 @@ final class MiMallocByteBufAllocator {
     private final AtomicInteger heapsScanLength;
 
     // Default segment size: 32 MiB.
-    // Possible segment size: {4, 8, 16, 32} MiB.
+    // Allowed segment size: {4, 8, 16, 32} MiB.
     private static int calculateSegmentShift() {
-        int segmentMibConf = SystemPropertyUtil.getInt("io.github.neoionet.allocator.mimalloc.segment.mib", 32);
+        int segmentMibConf = SystemPropertyUtil.getInt(SEGMENT_SIZE_PROP_KEY, 32);
         int segmentMibNextPower2 = MathUtil.safeFindNextPositivePowerOfTwo(segmentMibConf);
         if (segmentMibNextPower2 < 4) {
             segmentMibNextPower2 = 4;
@@ -157,10 +160,21 @@ final class MiMallocByteBufAllocator {
         return Integer.numberOfTrailingZeros(segmentMibNextPower2) + 4;
     }
 
+    // Default page search strategy: best-fit.
+    // Allowed page search strategy: {best-fit, first-fit}.
+    private static PageSearchStrategy getPageSearchStrategy() {
+        String value = SystemPropertyUtil.get(PAGE_SEARCH_STRATEGY_PROP_KEY, BEST.name()).toUpperCase();
+        try {
+            return PageSearchStrategy.valueOf(value);
+        } catch (IllegalArgumentException e) {
+            return BEST;
+        }
+    }
+
     static {
         if (logger.isDebugEnabled()) {
-            logger.error("-Dio.github.neoionet.allocator.mimalloc.segment.mib: {}", SEGMENT_SIZE / MiB);
-            logger.error("-Dio.github.neoionet.allocator.mimalloc.pageUseBestFitSearch: {}", PAGE_USE_BEST_FIT_SEARCH);
+            logger.debug("-D" + SEGMENT_SIZE_PROP_KEY + ": {}", SEGMENT_SIZE / MiB);
+            logger.debug("-D" + PAGE_SEARCH_STRATEGY_PROP_KEY + ": {}", PAGE_SEARCH_STRATEGY.name().toLowerCase());
         }
     }
 
@@ -559,7 +573,7 @@ final class MiMallocByteBufAllocator {
                 Page next = page.nextPage;
                 candidateCount++;
                 page.pageFreeCollect(false);
-                if (PAGE_USE_BEST_FIT_SEARCH) {
+                if (PAGE_SEARCH_STRATEGY == BEST) {
                     // Search up to N pages for the best candidate
                     boolean immediateAvailable = page.immediateAvailable();
                     // If the page is completely full, move it to the `pages_full` queue,
@@ -2687,4 +2701,10 @@ final class MiMallocByteBufAllocator {
             return index + adjustment;
         }
     }
+
+    enum PageSearchStrategy {
+        BEST, // best-fit
+        FIRST // first-fit
+    }
+
 }
