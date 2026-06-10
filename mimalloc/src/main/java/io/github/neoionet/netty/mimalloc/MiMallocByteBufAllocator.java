@@ -103,7 +103,8 @@ final class MiMallocByteBufAllocator {
             "io.github.neoionet.allocator.mimalloc.page.search.strategy";
     private static final PageSearchStrategy PAGE_SEARCH_STRATEGY = getPageSearchStrategy();
 
-    private static final int MAX_PAGE_CANDIDATE_SEARCH = 4;
+    private static final int MAX_PAGE_CANDIDATE_SEARCH = 5;
+    private static final int MAX_FULL_PAGE_MOVE = 10;
 
     private static final Page EMPTY_PAGE = new Page();
     // 4 KiB
@@ -566,35 +567,39 @@ final class MiMallocByteBufAllocator {
 
         private Page pageQueueFindFreeEx(PageQueue pq, boolean firstTry) {
             int candidateCount = 0;
+            int fullPageMoveCount = 0;
             Page pageCandidate = null;
             Page page = pq.firstPage;
-            // Search through the pages in "next fit" order.
+            // Search through the pages in "next fit" order, which starts from the first non-full page.
             while (page != null) {
                 Page next = page.nextPage;
-                candidateCount++;
                 page.pageFreeCollect(false);
                 if (PAGE_SEARCH_STRATEGY == BEST) {
-                    // Search up to N pages for the best candidate
-                    boolean immediateAvailable = page.immediateAvailable();
+                    // Search up pages for the best candidate
+                    boolean isPageExpandable = page.isPageExpandable();
                     // If the page is completely full, move it to the `pages_full` queue,
                     // so we don't visit long-lived pages too often.
-                    if (!immediateAvailable && !page.isPageExpandable()) {
+                    if (!page.immediateAvailable() && !isPageExpandable) {
                         pageToFull(page, pq);
+                        // Limit the full-page movements.
+                        if (++fullPageMoveCount >= MAX_FULL_PAGE_MOVE) {
+                            break;
+                        }
                     } else {
                         // The page has free space, make it a candidate.
                         // We prefer non-expandable pages with high usage as candidates
                         // (to increase the chance of freeing up pages).
+                        candidateCount++;
                         if (pageCandidate == null) {
                             pageCandidate = page;
-                            candidateCount = 0;
                         } else if (page.usedBlocks >= pageCandidate.usedBlocks && !page.isMostlyUsed()
-                                && !page.isPageExpandable()) {
+                                && !isPageExpandable) {
                             // Prefer to reuse fuller pages (in the hope the less used page gets freed).
                             pageCandidate = page;
                         }
-                        // If we find a non-expandable candidate, or searched for N pages,
-                        // return with the best candidate.
-                        if (immediateAvailable || candidateCount > MAX_PAGE_CANDIDATE_SEARCH) {
+                        // If we have compared `MAX_PAGE_CANDIDATE_SEARCH` candidate pages,
+                        // return the `pageCandidate` as the best candidate.
+                        if (candidateCount >= MAX_PAGE_CANDIDATE_SEARCH) {
                             break;
                         }
                     }
@@ -608,6 +613,10 @@ final class MiMallocByteBufAllocator {
                     // queue so we don't visit long-lived pages too often.
                     assert !page.isInFull && !page.immediateAvailable();
                     pageToFull(page, pq);
+                    // Limit the full-page movements.
+                    if (++fullPageMoveCount >= MAX_FULL_PAGE_MOVE) {
+                        break;
+                    }
                 }
                 page = next;
             }
