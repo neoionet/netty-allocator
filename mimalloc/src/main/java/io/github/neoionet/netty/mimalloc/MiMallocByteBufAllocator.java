@@ -14,7 +14,6 @@ import io.netty.util.concurrent.FastThreadLocalThread;
 import io.netty.util.internal.MathUtil;
 import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.SystemPropertyUtil;
-import io.netty.util.internal.UnstableApi;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
@@ -47,7 +46,6 @@ import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.PageSea
 import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.SegmentKind.SEGMENT_HUGE;
 import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.SegmentKind.SEGMENT_NORMAL;
 
-@UnstableApi
 final class MiMallocByteBufAllocator {
 
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(MiMallocByteBufAllocator.class);
