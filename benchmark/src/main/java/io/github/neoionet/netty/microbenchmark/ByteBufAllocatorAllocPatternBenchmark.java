@@ -36,6 +36,7 @@ import org.openjdk.jmh.annotations.Scope;
 import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.TearDown;
+import org.openjdk.jmh.annotations.Threads;
 import org.openjdk.jmh.annotations.Warmup;
 import org.openjdk.jmh.infra.Blackhole;
 import org.openjdk.jmh.runner.Runner;
@@ -64,10 +65,10 @@ import java.util.function.Supplier;
         "-Djmh.executor=CUSTOM",
         "-Djmh.executor.class=io.github.neoionet.netty.microbenchmark.executor.FastThreadLocalThreadHarnessExecutor"
 })
+@Threads(1)
 public class ByteBufAllocatorAllocPatternBenchmark {
 
     static {
-        System.setProperty("io.netty.allocator.chunkReuseQueueCapacity", "1024");
         ResourceLeakDetector.setLevel(ResourceLeakDetector.Level.DISABLED);
     }
 
