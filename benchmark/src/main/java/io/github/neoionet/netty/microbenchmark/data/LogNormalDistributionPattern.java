@@ -1,5 +1,9 @@
 package io.github.neoionet.netty.microbenchmark.data;
 
+import io.netty.buffer.AdaptiveByteBufAllocator;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.PooledByteBufAllocator;
+import io.netty.util.internal.MathUtil;
 import org.apache.commons.math3.distribution.LogNormalDistribution;
 import org.apache.commons.math3.random.Well19937c;
 
@@ -12,14 +16,13 @@ public class LogNormalDistributionPattern {
 
     public static final int[] FLATTENED_SIZE_ARRAY = new int[1 << 17];
     static {
-        // TODO: consider using (7.0, 0.85), (6.9, 0.9)?
         LogNormalDistribution sizeDistribution = new LogNormalDistribution(new Well19937c(42L),
-                7.5, 1.2, LogNormalDistribution.DEFAULT_INVERSE_ABSOLUTE_ACCURACY);
+                6.9, 0.9, LogNormalDistribution.DEFAULT_INVERSE_ABSOLUTE_ACCURACY);
         for (int i = 0; i < FLATTENED_SIZE_ARRAY.length; i++) {
             long sampleSize = (long) sizeDistribution.sample();
-            // Range: 8 Byte - 1 MiB.
+            // Limit range: 8 Byte - 1 MiB.
             int size = (int) Math.max(8, Math.min(sampleSize, 1024 * 1024));
-            FLATTENED_SIZE_ARRAY[i] =size;
+            FLATTENED_SIZE_ARRAY[i] = size;
         }
     }
 }
