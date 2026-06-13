@@ -116,16 +116,13 @@ public class ByteBufAllocatorAllocPatternBenchmark {
 
     // Must be power of 2.
     @Param({
-            "128",
-            "256",
-            "512",
-            "1024",
-            "2048",
-            "4096",
-            "8192",
-            8192 * 2 + "",
-            8192 * 4 + "",
-            8192 * 8 + "",
+            "128",  // 128 buffers per thread
+            "1024", // 1K buffers per thread
+            "4096", // 4K buffers per thread
+            "8192", // 8K buffers per thread
+            8192 * 2 + "", // 16K buffers per thread
+            8192 * 4 + "", // 32K buffers per thread
+            8192 * 8 + "", // 64K buffers per thread
     })
     public int MAX_LIVE_BUFFERS;
 
