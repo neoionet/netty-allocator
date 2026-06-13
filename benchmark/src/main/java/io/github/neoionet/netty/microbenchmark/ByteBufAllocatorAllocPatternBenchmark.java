@@ -58,6 +58,8 @@ import java.util.function.Supplier;
 @Fork(value = 1, jvmArgs = {
         "-server",
         "-dsa", "-da",
+        "-XX:InitialRAMPercentage=40.0",
+        "-XX:MaxRAMPercentage=40.0",
         "-Dio.netty.leakDetection.level=disabled",
         "-Djmh.executor=CUSTOM",
         "-Djmh.executor.class=io.github.neoionet.netty.microbenchmark.executor.FastThreadLocalThreadHarnessExecutor"
@@ -109,8 +111,8 @@ public class ByteBufAllocatorAllocPatternBenchmark {
     private ByteBufAllocator allocator;
 
     @Param({
-            "true",
-            "false"
+            "false",
+            "true"
     })
     public boolean enableReadWrite;
 
@@ -186,16 +188,8 @@ public class ByteBufAllocatorAllocPatternBenchmark {
 
         @CompilerControl(CompilerControl.Mode.DONT_INLINE)
         public void performDirectAllocation(Blackhole blackhole) {
+            int releaseIndex = this.readAndRelease(blackhole);
             int size = sizes[getNextSizeIndex()];
-            int releaseIndex = getNextReleaseIndex();
-            ByteBuf[] buffers = this.buffers;
-            ByteBuf oldBuf = buffers[releaseIndex];
-            if (oldBuf != null) {
-                if (enableReadWrite) {
-                    blackhole.consume(oldBuf.readByte());
-                }
-                blackhole.consume(oldBuf.release());
-            }
             ByteBuf newBuf = allocateDirect(allocator, size);
             if (enableReadWrite) {
                 blackhole.consume(newBuf.writeByte(size));
@@ -205,21 +199,26 @@ public class ByteBufAllocatorAllocPatternBenchmark {
 
         @CompilerControl(CompilerControl.Mode.DONT_INLINE)
         public void performHeapAllocation(Blackhole blackhole) {
+            int releaseIndex = this.readAndRelease(blackhole);
             int size = sizes[getNextSizeIndex()];
+            ByteBuf newBuf = allocateHeap(allocator, size);
+            if (enableReadWrite) {
+                blackhole.consume(newBuf.writeByte(size));
+            }
+            buffers[releaseIndex] = newBuf;
+        }
+
+        @CompilerControl(CompilerControl.Mode.DONT_INLINE)
+        private int readAndRelease(Blackhole blackhole) {
             int releaseIndex = getNextReleaseIndex();
-            ByteBuf[] buffers = this.buffers;
-            ByteBuf oldBuf = buffers[releaseIndex];
+            ByteBuf oldBuf = this.buffers[releaseIndex];
             if (oldBuf != null) {
                 if (enableReadWrite) {
                     blackhole.consume(oldBuf.readByte());
                 }
                 blackhole.consume(oldBuf.release());
             }
-            ByteBuf newBuf = allocateHeap(allocator, size);
-            if (enableReadWrite) {
-                blackhole.consume(newBuf.writeByte(size));
-            }
-            buffers[releaseIndex] = newBuf;
+            return releaseIndex;
         }
 
         private static void releaseBufferArray(ByteBuf[] buffers) {
