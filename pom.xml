@@ -11,7 +11,7 @@
 
     <groupId>io.github.neoionet</groupId>
     <artifactId>netty-allocator</artifactId>
-    <version>1.0.8.Final-SNAPSHOT</version>
+    <version>1.0.9.Final-SNAPSHOT</version>
     <packaging>pom</packaging>
     <modules>
         <module>mimalloc</module>
