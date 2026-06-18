@@ -148,7 +148,7 @@ final class MiMallocByteBufAllocator {
     // Default segment size: 32 MiB.
     // Allowed segment size: {4, 8, 16, 32} MiB.
     private static int calculateSegmentShift() {
-        int segmentMibConf = SystemPropertyUtil.getInt(SEGMENT_SIZE_PROP_KEY, 32);
+        int segmentMibConf = SystemPropertyUtil.getInt(SEGMENT_SIZE_PROP_KEY, 4);
         int segmentMibNextPower2 = MathUtil.safeFindNextPositivePowerOfTwo(segmentMibConf);
         if (segmentMibNextPower2 < 4) {
             segmentMibNextPower2 = 4;
@@ -311,6 +311,27 @@ final class MiMallocByteBufAllocator {
         ABANDON
     }
 
+    private static final class ArrayDequeBounded<MiByteBuf> extends ArrayDeque<MiByteBuf> {
+        private final int capacity;
+
+        public ArrayDequeBounded(int capacity) {
+            super(capacity);
+            this.capacity = capacity;
+        }
+
+        public boolean offerFirst(MiByteBuf e) {
+            if (size() >= capacity) {
+                return false;
+            }
+            return super.offerFirst(e);
+        }
+
+        @Override
+        public MiByteBuf pollFirst() {
+            return super.pollFirst();
+        }
+    }
+
     static final class LocalHeap {
         final SegmentTld segmentTld;
         int pageCount; // total number of pages in the `pages` queues.
@@ -326,11 +347,10 @@ final class MiMallocByteBufAllocator {
         private static final byte VISIT_TYPE_PAGE_MARK = 0;
         private static final byte VISIT_TYPE_PAGE_COLLECT = 1;
 
-        private static final int MAX_BLOCK_QUEUE_SIZE = 1024;
-        private final ArrayDeque<Block> blockDeque;
         private Segment reservedNormalSegment;
         private long reservedNormalSegmentNano;
         private final StampedLock sharedLock;
+        private final ArrayDequeBounded<MiByteBuf> miBufQueue;
 
         LocalHeap(MiMallocByteBufAllocator allocator, StampedLock sharedLock) {
             segmentTld = new SegmentTld();
@@ -338,8 +358,8 @@ final class MiMallocByteBufAllocator {
             Arrays.fill(pagesFreeDirect, EMPTY_PAGE);
             this.allocator = allocator;
             this.threadDelayedFreeList = new AtomicReference<>();
-            this.blockDeque = new ArrayDeque<Block>(32);
             this.sharedLock = sharedLock;
+            this.miBufQueue = new ArrayDequeBounded<MiByteBuf>(1024);
             pageQueues = new PageQueue[] {
                     new PageQueue(1, 0), // placeholder, not used.
                     new PageQueue(1, 1), new PageQueue(2, 2),
@@ -396,7 +416,6 @@ final class MiMallocByteBufAllocator {
             // If during abandoning, mark all pages to no longer add to the delayed-free list
             if (collectType == ABANDON) {
                 heapVisitPages(collectType, VISIT_TYPE_PAGE_MARK);
-                this.blockDeque.clear();
                 freeReservedSegment();
             }
             // Free all current thread's delayed blocks.
@@ -572,7 +591,7 @@ final class MiMallocByteBufAllocator {
             // A fresh page was found, initialize it.
             page.reservedBlocks = 1;
             page.retireExpire = 0;
-            page.freeList = new Block(page, page.blockSize, page.adjustment, null);
+            page.freeList = new Block(page, page.adjustment, null);
             page.capacityBlocks = 1;
             return page;
         }
@@ -709,37 +728,26 @@ final class MiMallocByteBufAllocator {
             return true;
         }
 
-        private Block getBlock(Page page, int blockBytes, int adjustment) {
-            Block block;
-            if (blockDeque.isEmpty()) {
-                block = new Block(page, blockBytes, adjustment, null);
-            } else {
-                block = blockDeque.pollLast();
-                assert block != null;
-                block.page = page;
-                block.blockBytes = blockBytes;
-                block.blockAdjustment = adjustment;
-                block.nextBlock = null;
-            }
-            return block;
+        private Block getBlock(Page page, int adjustment) {
+            return new Block(page, adjustment, null);
         }
 
         private void pageFreeListExtend(Page page, int bSize, int extend) {
             assert extend > 0;
-            Block start = getBlock(page, bSize, page.adjustment + page.capacityBlocks * bSize);
+            Block start = getBlock(page, page.adjustment + page.capacityBlocks * bSize);
             // Initialize a sequential free list.
             Block last;
             int count = 1; // For assertion
             if (extend == 1) {
                 last = start;
             } else {
-                last = getBlock(page, bSize, page.adjustment + (page.capacityBlocks + extend - 1) * bSize);
+                last = getBlock(page, page.adjustment + (page.capacityBlocks + extend - 1) * bSize);
                 assert count++ > 0; // Increase `count` if assertion enabled
             }
             Block block = start;
             if (extend > 1) {
                 while (block.blockAdjustment < last.blockAdjustment - bSize) {
-                    Block next = getBlock(page, bSize, block.blockAdjustment + bSize);
+                    Block next = getBlock(page, block.blockAdjustment + bSize);
                     block.nextBlock = next;
                     assert count++ > 0; // Increase `count` if assertion enabled
                     assert next.blockAdjustment > block.blockAdjustment;
@@ -788,7 +796,7 @@ final class MiMallocByteBufAllocator {
             if (page.isHuge) {
                 page.reservedBlocks = 1;
                 page.retireExpire = 0;
-                page.freeList = getBlock(page, page.blockSize, page.adjustment);
+                page.freeList = getBlock(page, page.adjustment);
                 page.capacityBlocks = 1;
             } else {
                 page.blockSize = blockSize;
@@ -1298,27 +1306,9 @@ final class MiMallocByteBufAllocator {
             pageQueueRemove(pq, page);
             // And free it.
             page.capacityBlocks = 0;
-            recycleBlocks(page.freeList);
             page.freeList = null;
-            recycleBlocks(page.localFreeList);
             page.localFreeList = null;
             segmentPageFree(page);
-        }
-
-        private void recycleBlocks(Block firstBlock) {
-            if (firstBlock == null) {
-                return;
-            }
-            Block currentBlock = firstBlock;
-            Block recycledBlock;
-            int blockQueueAvailableCapacity = MAX_BLOCK_QUEUE_SIZE - blockDeque.size();
-            while (blockQueueAvailableCapacity-- > 0 && currentBlock != null) {
-                recycledBlock = currentBlock;
-                currentBlock = currentBlock.nextBlock;
-                recycledBlock.page = null;
-                recycledBlock.nextBlock = null;
-                blockDeque.addLast(recycledBlock);
-            }
         }
 
         private void segmentPageFree(Page page) {
@@ -1539,6 +1529,14 @@ final class MiMallocByteBufAllocator {
 
         private void pageQueueEnqueueFrom(PageQueue to, PageQueue from, Page page) {
             pageQueueEnqueueFromEx(to, from, true, page);
+        }
+
+        private MiByteBuf getMiByteBuf() {
+            MiByteBuf buf = this.miBufQueue.pollFirst();
+            if (buf == null) {
+                buf = new MiByteBuf();
+            }
+            return buf;
         }
     }
 
@@ -1793,15 +1791,13 @@ final class MiMallocByteBufAllocator {
         }
     }
 
-    static final class Block extends MiByteBuf {
-        private Page page;
-        private int blockBytes;
-        private int blockAdjustment;
+    static final class Block {
+        private final Page page;
+        private final int blockAdjustment;
         private Block nextBlock;
 
-        Block(Page page, int blockBytes, int blockAdjustment, Block nextBlock) {
+        Block(Page page, int blockAdjustment, Block nextBlock) {
             this.page = page;
-            this.blockBytes = blockBytes;
             this.blockAdjustment = blockAdjustment;
             this.nextBlock = nextBlock;
         }
@@ -2083,7 +2079,7 @@ final class MiMallocByteBufAllocator {
             Block block = page.freeList;
             if (block != null) {
                 if (byteBuf == null) {
-                    byteBuf = block;
+                    byteBuf = heap.getMiByteBuf();
                 }
                 page.freeList = block.nextBlock;
                 byteBuf.init(block, size, maxCapacity, isReAlloc);
@@ -2120,7 +2116,7 @@ final class MiMallocByteBufAllocator {
         }
         Block block = page.freeList;
         if (byteBuf == null) {
-            byteBuf = block;
+            byteBuf = heap.getMiByteBuf();
         }
         page.freeList = block.nextBlock;
         byteBuf.init(block, size, maxCapacity, isReAlloc);
@@ -2144,7 +2140,7 @@ final class MiMallocByteBufAllocator {
         }
         Block block = page.freeList;
         if (buf == null) {
-            buf = block;
+            buf = heap.getMiByteBuf();
         }
         page.freeList = block.nextBlock;
         buf.init(block, size, maxCapacity, isReAlloc);
@@ -2242,7 +2238,7 @@ final class MiMallocByteBufAllocator {
         AbstractByteBuf allocate(int initialCapacity, int maxCapacity);
     }
 
-    static class MiByteBuf extends AbstractReferenceCountedByteBuf {
+    static final class MiByteBuf extends AbstractReferenceCountedByteBuf {
         private int length;
         private int maxFastCapacity;
         private AbstractByteBuf rootParent;
@@ -2267,10 +2263,12 @@ final class MiMallocByteBufAllocator {
             }
             this.block = block;
             this.length = length;
-            this.maxFastCapacity = block.blockBytes;
+            Page page = block.page;
+            assert page.blockSize > 1;
+            this.maxFastCapacity = page.blockSize;
             this.adjustment = block.blockAdjustment;
             maxCapacity(maxCapacity);
-            this.rootParent = block.page.segment.delegate;
+            this.rootParent = page.segment.delegate;
             this.tmpNioBuf = null;
             this.hasArray = rootParent.hasArray();
             this.hasMemoryAddress = rootParent.hasMemoryAddress();
@@ -2279,17 +2277,14 @@ final class MiMallocByteBufAllocator {
         @Override
         protected void deallocate() {
             assert this.block != null;
-            this.length = -1;
-            this.maxFastCapacity = -1;
-            this.adjustment = -1;
             this.rootParent = null;
             this.tmpNioBuf = null;
-            this.hasArray = false;
-            this.hasMemoryAddress = false;
-            MiMallocByteBufAllocator allocator = this.block.page.segment.parent;
+            Segment segment = this.block.page.segment;
+            MiMallocByteBufAllocator allocator = segment.parent;
             Block bk = this.block;
             this.block = null;
             allocator.free(bk);
+            segment.ownerHeap.miBufQueue.offerFirst(this);
         }
 
         public ByteBuf capacity(int newCapacity) {
@@ -2314,9 +2309,6 @@ final class MiMallocByteBufAllocator {
              */
             MiMallocByteBufAllocator allocator = this.block.page.segment.parent;
             Block oldBlock = this.block;
-            if (this == oldBlock) {
-                oldBlock = new Block(oldBlock.page, oldBlock.blockBytes, oldBlock.blockAdjustment, null);
-            }
             int baseOldRootIndex = adjustment;
             int oldCapacity = length;
             AbstractByteBuf oldRoot = rootParent();
