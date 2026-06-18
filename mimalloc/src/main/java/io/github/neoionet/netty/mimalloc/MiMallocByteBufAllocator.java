@@ -148,7 +148,7 @@ final class MiMallocByteBufAllocator {
     // Default segment size: 32 MiB.
     // Allowed segment size: {4, 8, 16, 32} MiB.
     private static int calculateSegmentShift() {
-        int segmentMibConf = SystemPropertyUtil.getInt(SEGMENT_SIZE_PROP_KEY, 32);
+        int segmentMibConf = SystemPropertyUtil.getInt(SEGMENT_SIZE_PROP_KEY, 4);
         int segmentMibNextPower2 = MathUtil.safeFindNextPositivePowerOfTwo(segmentMibConf);
         if (segmentMibNextPower2 < 4) {
             segmentMibNextPower2 = 4;
