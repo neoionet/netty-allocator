@@ -145,7 +145,7 @@ final class MiMallocByteBufAllocator {
 
     private final AtomicInteger heapsScanLength;
 
-    // Default segment size: 32 MiB.
+    // Default segment size: 4 MiB.
     // Allowed segment size: {4, 8, 16, 32} MiB.
     private static int calculateSegmentShift() {
         int segmentMibConf = SystemPropertyUtil.getInt(SEGMENT_SIZE_PROP_KEY, 4);
