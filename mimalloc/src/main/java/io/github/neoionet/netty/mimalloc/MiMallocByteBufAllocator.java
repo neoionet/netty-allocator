@@ -636,9 +636,10 @@ final class MiMallocByteBufAllocator {
                 if (PAGE_SEARCH_STRATEGY == BEST) {
                     // Search up to N pages for the best candidate
                     boolean immediateAvailable = page.immediateAvailable();
+                    boolean isPageExpandable = page.isPageExpandable();
                     // If the page is completely full, move it to the `pages_full` queue,
                     // so we don't visit long-lived pages too often.
-                    if (!immediateAvailable && !page.isPageExpandable()) {
+                    if (!immediateAvailable && !isPageExpandable) {
                         pageToFull(page, pq);
                         // Limit the full-page movements.
                         if (++fullPageMoveCount >= MAX_FULL_PAGE_MOVE) {
@@ -652,7 +653,7 @@ final class MiMallocByteBufAllocator {
                             pageCandidate = page;
                             candidateCount = 0;
                         } else if (page.usedBlocks >= pageCandidate.usedBlocks && !page.isMostlyUsed()
-                                && !page.isPageExpandable()) {
+                                && !isPageExpandable) {
                             // Prefer to reuse fuller pages (in the hope the less used page gets freed).
                             pageCandidate = page;
                         }
