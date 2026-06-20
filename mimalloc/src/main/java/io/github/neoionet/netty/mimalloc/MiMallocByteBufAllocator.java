@@ -213,7 +213,7 @@ final class MiMallocByteBufAllocator {
         }
     }
 
-    abstract static class SharedHeapWrapLhsPadding {
+    private static class SharedHeapWrapLhsPadding {
         // Borrowed from JCTools.
         byte b000,b001,b002,b003,b004,b005,b006,b007;//  8b
         byte b010,b011,b012,b013,b014,b015,b016,b017;// 16b
@@ -233,12 +233,12 @@ final class MiMallocByteBufAllocator {
 //        byte b170,b171,b172,b173,b174,b175,b176,b177;//128b
     }
 
-    abstract static class SharedHeapWrapValue extends SharedHeapWrapLhsPadding {
+    private static class SharedHeapWrapValue extends SharedHeapWrapLhsPadding {
         final StampedLock lock = new StampedLock();
         LocalHeap heap;
     }
 
-    static final class SharedHeapWrap extends SharedHeapWrapValue {
+    private static final class SharedHeapWrap extends SharedHeapWrapValue {
         // Borrowed from JCTools.
         byte b000,b001,b002,b003,b004,b005,b006,b007;//  8b
         byte b010,b011,b012,b013,b014,b015,b016,b017;// 16b
