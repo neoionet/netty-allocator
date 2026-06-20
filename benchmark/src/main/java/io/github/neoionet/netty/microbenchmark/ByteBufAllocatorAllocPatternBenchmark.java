@@ -37,7 +37,6 @@ import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.TearDown;
 import org.openjdk.jmh.annotations.Warmup;
-import org.openjdk.jmh.infra.Blackhole;
 import org.openjdk.jmh.runner.Runner;
 import org.openjdk.jmh.runner.RunnerException;
 import org.openjdk.jmh.runner.options.Options;
@@ -104,7 +103,7 @@ public class ByteBufAllocatorAllocPatternBenchmark {
     @Param({
             "ADAPTIVE",
             "POOLED",
-            "MIMALLOC"
+            "MIMALLOC",
     })
     public AllocatorType allocatorType;
     private ByteBufAllocator allocator;
@@ -117,10 +116,10 @@ public class ByteBufAllocatorAllocPatternBenchmark {
 
     // Must be power of 2.
     @Param({
-            "128",  // 128 buffers per thread
-            "1024", // 1K buffers per thread
-            "4096", // 4K buffers per thread
-            "8192", // 8K buffers per thread
+           "128",  // 128 buffers per thread
+           "1024", // 1K buffers per thread
+           "4096", // 4K buffers per thread
+           "8192", // 8K buffers per thread
             8192 * 2 + "", // 16K buffers per thread
             8192 * 4 + "", // 32K buffers per thread
             8192 * 8 + "", // 64K buffers per thread
@@ -186,38 +185,41 @@ public class ByteBufAllocatorAllocPatternBenchmark {
         }
 
         @CompilerControl(CompilerControl.Mode.DONT_INLINE)
-        public void performDirectAllocation(Blackhole blackhole) {
-            int releaseIndex = this.readAndRelease(blackhole);
+        public ByteBuf performDirectAllocation() {
+            int releaseIndex = getNextReleaseIndex();
+            this.readAndRelease(releaseIndex);
             int size = sizes[getNextSizeIndex()];
             ByteBuf newBuf = allocateDirect(allocator, size);
             if (enableReadWrite) {
-                blackhole.consume(newBuf.writeByte(size));
+                newBuf.writeByte(size);
             }
             buffers[releaseIndex] = newBuf;
+            return newBuf;
         }
 
         @CompilerControl(CompilerControl.Mode.DONT_INLINE)
-        public void performHeapAllocation(Blackhole blackhole) {
-            int releaseIndex = this.readAndRelease(blackhole);
+        public ByteBuf performHeapAllocation() {
+            int releaseIndex = getNextReleaseIndex();
+            this.readAndRelease(releaseIndex);
             int size = sizes[getNextSizeIndex()];
             ByteBuf newBuf = allocateHeap(allocator, size);
             if (enableReadWrite) {
-                blackhole.consume(newBuf.writeByte(size));
+                newBuf.writeByte(size);
             }
             buffers[releaseIndex] = newBuf;
+            return newBuf;
         }
 
         @CompilerControl(CompilerControl.Mode.DONT_INLINE)
-        private int readAndRelease(Blackhole blackhole) {
-            int releaseIndex = getNextReleaseIndex();
+        private ByteBuf readAndRelease(int releaseIndex) {
             ByteBuf oldBuf = this.buffers[releaseIndex];
             if (oldBuf != null) {
                 if (enableReadWrite) {
-                    blackhole.consume(oldBuf.readByte());
+                    oldBuf.readByte();
                 }
-                blackhole.consume(oldBuf.release());
+                oldBuf.release();
             }
-            return releaseIndex;
+            return oldBuf;
         }
 
         private static void releaseBufferArray(ByteBuf[] buffers) {
@@ -245,13 +247,13 @@ public class ByteBufAllocatorAllocPatternBenchmark {
     }
 
     @Benchmark
-    public void directAllocation(AllocationPatternState state, Blackhole blackhole) {
-        state.performDirectAllocation(blackhole);
+    public void directAllocation(AllocationPatternState state) {
+        state.performDirectAllocation();
     }
 
     @Benchmark
-    public void heapAllocation(AllocationPatternState state, Blackhole blackhole) {
-        state.performHeapAllocation(blackhole);
+    public void heapAllocation(AllocationPatternState state) {
+        state.performHeapAllocation();
     }
 
     public static void main(String[] args) throws RunnerException {
