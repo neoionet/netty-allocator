@@ -311,6 +311,27 @@ final class MiMallocByteBufAllocator {
         ABANDON
     }
 
+    private static final class ArrayDequeBounded<E> extends ArrayDeque<E> {
+        private final int capacity;
+
+        public ArrayDequeBounded(int capacity) {
+            super(capacity);
+            this.capacity = capacity;
+        }
+
+        public boolean offerFirst(E e) {
+            if (size() >= capacity) {
+                return false;
+            }
+            return super.offerFirst(e);
+        }
+
+        @Override
+        public E pollFirst() {
+            return super.pollFirst();
+        }
+    }
+
     static final class LocalHeap {
         final SegmentTld segmentTld;
         int pageCount; // total number of pages in the `pages` queues.
@@ -326,8 +347,7 @@ final class MiMallocByteBufAllocator {
         private static final byte VISIT_TYPE_PAGE_MARK = 0;
         private static final byte VISIT_TYPE_PAGE_COLLECT = 1;
 
-        private static final int MAX_BLOCK_QUEUE_SIZE = 1024;
-        private final ArrayDeque<Block> blockDeque;
+        private final ArrayDequeBounded<Block> blockDeque;
         private Segment reservedNormalSegment;
         private long reservedNormalSegmentNano;
         private final StampedLock sharedLock;
@@ -338,7 +358,7 @@ final class MiMallocByteBufAllocator {
             Arrays.fill(pagesFreeDirect, EMPTY_PAGE);
             this.allocator = allocator;
             this.threadDelayedFreeList = new AtomicReference<>();
-            this.blockDeque = new ArrayDeque<Block>(32);
+            this.blockDeque = new ArrayDequeBounded<Block>(1024);
             this.sharedLock = sharedLock;
             pageQueues = new PageQueue[] {
                     new PageQueue(1, 0), // placeholder, not used.
@@ -1313,13 +1333,12 @@ final class MiMallocByteBufAllocator {
             }
             Block currentBlock = firstBlock;
             Block recycledBlock;
-            int blockQueueAvailableCapacity = MAX_BLOCK_QUEUE_SIZE - blockDeque.size();
-            while (blockQueueAvailableCapacity-- > 0 && currentBlock != null) {
+            boolean offeredSuccess = true;
+            while (offeredSuccess && currentBlock != null) {
                 recycledBlock = currentBlock;
                 currentBlock = currentBlock.nextBlock;
-                recycledBlock.page = null;
                 recycledBlock.nextBlock = null;
-                blockDeque.addLast(recycledBlock);
+                offeredSuccess = blockDeque.offerFirst(recycledBlock);
             }
         }
 
