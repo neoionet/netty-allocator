@@ -1,9 +1,5 @@
 package io.github.neoionet.netty.microbenchmark.data;
 
-import io.netty.buffer.AdaptiveByteBufAllocator;
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.PooledByteBufAllocator;
-import io.netty.util.internal.MathUtil;
 import org.apache.commons.math3.distribution.LogNormalDistribution;
 import org.apache.commons.math3.random.Well19937c;
 

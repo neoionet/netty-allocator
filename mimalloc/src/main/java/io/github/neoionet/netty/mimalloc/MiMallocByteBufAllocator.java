@@ -29,6 +29,7 @@ import java.nio.channels.ScatteringByteChannel;
 import java.nio.charset.Charset;
 import java.util.ArrayDeque;
 import java.util.Arrays;
+import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -351,6 +352,7 @@ final class MiMallocByteBufAllocator {
         private long reservedNormalSegmentNano;
         private final StampedLock sharedLock;
         private final ArrayDequeBounded<MiByteBuf> miBufDeque;
+        private final Queue<MiByteBuf> miBufMpscQueue;
         private final ArrayDequeBounded<Block> blockDeque;
 
         LocalHeap(MiMallocByteBufAllocator allocator, StampedLock sharedLock) {
@@ -361,6 +363,7 @@ final class MiMallocByteBufAllocator {
             this.threadDelayedFreeList = new AtomicReference<>();
             this.sharedLock = sharedLock;
             this.miBufDeque = new ArrayDequeBounded<MiByteBuf>(1024);
+            this.miBufMpscQueue = PlatformDependent.newMpscQueue(1024);
             this.blockDeque = new ArrayDequeBounded<Block>(1024);
             pageQueues = new PageQueue[] {
                     new PageQueue(1, 0), // placeholder, not used.
@@ -418,6 +421,9 @@ final class MiMallocByteBufAllocator {
             // If during abandoning, mark all pages to no longer add to the delayed-free list
             if (collectType == ABANDON) {
                 heapVisitPages(collectType, VISIT_TYPE_PAGE_MARK);
+                this.blockDeque.clear();
+                this.miBufDeque.clear();
+                this.miBufMpscQueue.clear();
                 freeReservedSegment();
             }
             // Free all current thread's delayed blocks.
@@ -727,7 +733,7 @@ final class MiMallocByteBufAllocator {
                 extend = maxExtend;
             }
             pageFreeListExtend(page, bSize, extend);
-            page.capacityBlocks += extend;
+            page.capacityBlocks += (short) extend;
             return true;
         }
 
@@ -813,7 +819,7 @@ final class MiMallocByteBufAllocator {
             } else {
                 page.blockSize = blockSize;
                 int pageSize = page.sliceCount * SEGMENT_SLICE_SIZE;
-                page.reservedBlocks = pageSize / blockSize;
+                page.reservedBlocks = (short) (pageSize / blockSize);
                 page.retireExpire = DEFAULT_PAGE_RETIRE_EXPIRE_INIT;
                 pageExtendFree(page);
             }
@@ -1326,7 +1332,7 @@ final class MiMallocByteBufAllocator {
         }
 
         private void recycleBlocks(Block firstBlock) {
-            if (firstBlock == null) {
+            if (firstBlock == null || blockDeque.size() >= blockDeque.capacity) {
                 return;
             }
             Block currentBlock = firstBlock;
@@ -1563,6 +1569,9 @@ final class MiMallocByteBufAllocator {
         private MiByteBuf getMiByteBuf() {
             MiByteBuf buf = this.miBufDeque.pollFirst();
             if (buf == null) {
+                buf = this.miBufMpscQueue.poll();
+            }
+            if (buf == null) {
                 buf = new MiByteBuf();
             }
             return buf;
@@ -1572,14 +1581,12 @@ final class MiMallocByteBufAllocator {
     static final class PageQueue {
         private Page firstPage;
         private Page lastPage;
-        private final int blockWords;
         private final int blockSize;
-        private final int index;
+        private final byte index;
 
         PageQueue(int blockWords, int index) {
-            this.blockWords = blockWords;
             this.blockSize = blockWords * WORD_SIZE;
-            this.index = index;
+            this.index = (byte) index;
         }
     }
 
@@ -1642,15 +1649,15 @@ final class MiMallocByteBufAllocator {
 
     static class Page {
         Segment segment;
-        int capacityBlocks; // number of blocks created.
-        int reservedBlocks; // number of blocks reserved.
+        short capacityBlocks; // number of blocks created.
+        short reservedBlocks; // number of blocks reserved.
         boolean isInFull;
         // Expiration count for retired blocks.
         // retireExpire = 0 means disable retirement.
         byte retireExpire = DEFAULT_PAGE_RETIRE_EXPIRE_INIT;
         Block freeList;
         Block localFreeList;
-        int usedBlocks; // number of blocks in use (including blocks in `thread-free list`)
+        short usedBlocks; // number of blocks in use (including blocks in `thread-free list`)
         final AtomicReference<Block> threadFreeList = new AtomicReference<>();
         Page nextPage;
         Page prevPage;
@@ -1802,7 +1809,7 @@ final class MiMallocByteBufAllocator {
             tail.nextBlock = this.localFreeList;
             this.localFreeList = head;
             // Update counts now
-            this.usedBlocks -= count;
+            this.usedBlocks -= (short) count;
         }
 
         // Is the page not yet used up to its reserved space?
@@ -1853,12 +1860,7 @@ final class MiMallocByteBufAllocator {
     static final class SpanQueue {
         private Span firstSpan;
         private Span lastSpan;
-        private final int sliceCount;
-        private final int index;
-        SpanQueue(int sliceCount, int index) {
-            this.sliceCount = sliceCount;
-            this.index = index;
-        }
+        SpanQueue(int sliceCount, int index) {}
     }
 
     static final class Span extends Page {
@@ -1936,7 +1938,7 @@ final class MiMallocByteBufAllocator {
     }
 
     // Free a block.
-    void free(Page page, Block block) {
+    void free(Page page, Block block, MiByteBuf buf) {
         assert page != null;
         Segment segment = page.segment;
         assert segment != null;
@@ -1948,6 +1950,9 @@ final class MiMallocByteBufAllocator {
         if (segment.ownerThread == Thread.currentThread() && ownerHeap.sharedLock == null) {
             // thread-local free.
             page.freeBlockLocal(block, page.isInFull, ownerHeap);
+            if (buf != null) {
+                ownerHeap.miBufDeque.offerFirst(buf);
+            }
         } else {
             StampedLock sharedLock;
             long lockStamp;
@@ -1957,12 +1962,18 @@ final class MiMallocByteBufAllocator {
                 try {
                     // Successfully acquired the sharedLock, use thread-local free.
                     page.freeBlockLocal(block, page.isInFull, ownerHeap);
+                    if (buf != null) {
+                        ownerHeap.miBufDeque.offerFirst(buf);
+                    }
                 } finally {
                     sharedLock.unlockWrite(lockStamp);
                 }
             } else {
                 // Use the generic multi-threaded-free path.
                 freeBlockMt(page, segment, block);
+                if (buf != null && ownerHeap != null) {
+                    segment.ownerHeap.miBufMpscQueue.offer(buf);
+                }
             }
         }
     }
@@ -2324,8 +2335,7 @@ final class MiMallocByteBufAllocator {
             this.block = null;
             Page page = this.page;
             this.page = null;
-            allocator.free(page, bk);
-            segment.ownerHeap.miBufDeque.offerFirst(this);
+            allocator.free(page, bk, this);
         }
 
         public ByteBuf capacity(int newCapacity) {
@@ -2356,7 +2366,7 @@ final class MiMallocByteBufAllocator {
             AbstractByteBuf oldRoot = rootParent();
             allocator.reallocate(newCapacity, maxCapacity(), this);
             oldRoot.getBytes(baseOldRootIndex, this, 0, oldCapacity);
-            allocator.free(oldPage, oldBlock);
+            allocator.free(oldPage, oldBlock, null);
             return this;
         }
 
