@@ -82,8 +82,8 @@ public class ByteBufAllocatorAllocPatternBenchmark {
     }
 
     @Param({
+            "SOCKET_PROXY",
             "API_GATEWAY",
-            "SOCKET_PROXY"
     })
     public SizePattern sizePattern;
     private int[] sizesArray;
@@ -101,8 +101,8 @@ public class ByteBufAllocatorAllocPatternBenchmark {
         }
     }
     @Param({
-            "ADAPTIVE",
             "POOLED",
+            "ADAPTIVE",
             "MIMALLOC",
     })
     public AllocatorType allocatorType;
