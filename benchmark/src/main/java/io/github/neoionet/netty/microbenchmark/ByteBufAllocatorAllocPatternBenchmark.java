@@ -235,8 +235,10 @@ public class ByteBufAllocatorAllocPatternBenchmark {
         }
 
         @TearDown
-        public void tearDown() {
+        public void tearDown() throws InterruptedException {
             releaseBufferArray(buffers);
+            System.out.println("Trial done, sleeping 5s...");
+            Thread.sleep(5000);
         }
     }
 
