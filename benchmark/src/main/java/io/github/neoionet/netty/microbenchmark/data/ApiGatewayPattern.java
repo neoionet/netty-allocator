@@ -9,7 +9,7 @@ import org.apache.commons.math3.random.Well19937c;
  */
 public class ApiGatewayPattern {
     public static final int[] FLATTENED_SIZE_ARRAY = new int[1 << 17];
-    // Median ≈ 2 KiB; Mean ≈ 3.3 KiB; P95 ≈ 10KiB; P99 ≈ 22 KiB.
+    // Median ≈ 2 KiB; Mean ≈ 3.3 KiB; P95 ≈ 10KiB; P99 ≈ 20 KiB.
     private static final double scale = 7.6, shape = 1.0;
     static {
         LogNormalDistribution sizeDistribution = new LogNormalDistribution(new Well19937c(42L),
