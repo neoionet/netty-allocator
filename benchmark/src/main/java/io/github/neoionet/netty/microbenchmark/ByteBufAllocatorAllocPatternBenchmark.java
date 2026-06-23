@@ -15,8 +15,8 @@
  */
 package io.github.neoionet.netty.microbenchmark;
 
-import io.github.neoionet.netty.microbenchmark.data.LogNormalDistributionPattern;
 import io.github.neoionet.netty.microbenchmark.data.WebSocketProxyPattern;
+import io.github.neoionet.netty.microbenchmark.data.ApiGatewayPattern;
 import io.netty.buffer.AdaptiveByteBufAllocator;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
@@ -70,8 +70,8 @@ public class ByteBufAllocatorAllocPatternBenchmark {
     }
 
     public enum SizePattern {
-        LOG_NORMAL_PATTERN(() -> LogNormalDistributionPattern.FLATTENED_SIZE_ARRAY),
-        SOCKET_PROXY_PATTERN(() -> WebSocketProxyPattern.FLATTENED_SIZE_ARRAY);
+        API_GATEWAY(() -> ApiGatewayPattern.FLATTENED_SIZE_ARRAY),
+        SOCKET_PROXY(() -> WebSocketProxyPattern.FLATTENED_SIZE_ARRAY);
         private final Supplier<int[]> factory;
         SizePattern(Supplier<int[]> factory) {
             this.factory = factory;
@@ -82,8 +82,8 @@ public class ByteBufAllocatorAllocPatternBenchmark {
     }
 
     @Param({
-            "LOG_NORMAL_PATTERN",
-            "SOCKET_PROXY_PATTERN"
+            "API_GATEWAY",
+            "SOCKET_PROXY"
     })
     public SizePattern sizePattern;
     private int[] sizesArray;
