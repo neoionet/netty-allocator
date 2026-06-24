@@ -1577,6 +1577,13 @@ final class MiMallocByteBufAllocator {
             }
             return buf;
         }
+        private MiByteBuf getFallbackMiByteBuf() {
+            MiByteBuf buf = this.miBufCrossThreadsQueue.poll();
+            if (buf == null) {
+                buf = new MiByteBuf();
+            }
+            return buf;
+        }
     }
 
     static final class PageQueue {
@@ -2189,7 +2196,7 @@ final class MiMallocByteBufAllocator {
         }
         Block block = page.freeList;
         if (buf == null) {
-            buf = heap.getMiByteBuf();
+            buf = heap.getFallbackMiByteBuf();
         }
         page.freeList = block.nextBlock;
         buf.init(page, block, size, maxCapacity, isReAlloc);
