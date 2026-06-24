@@ -1577,6 +1577,7 @@ final class MiMallocByteBufAllocator {
             }
             return buf;
         }
+
         private MiByteBuf getFallbackMiByteBuf() {
             MiByteBuf buf = this.miBufCrossThreadsQueue.poll();
             if (buf == null) {
