@@ -351,8 +351,8 @@ final class MiMallocByteBufAllocator {
         private Segment reservedNormalSegment;
         private long reservedNormalSegmentNano;
         private final StampedLock sharedLock;
-        private final ArrayDequeBounded<MiByteBuf> miBufDeque;
-        private final Queue<MiByteBuf> miBufMpscQueue;
+        private final ArrayDequeBounded<MiByteBuf> miBufLocalDeque;
+        private final Queue<MiByteBuf> miBufCrossThreadsQueue;
         private final ArrayDequeBounded<Block> blockDeque;
 
         LocalHeap(MiMallocByteBufAllocator allocator, StampedLock sharedLock) {
@@ -362,8 +362,9 @@ final class MiMallocByteBufAllocator {
             this.allocator = allocator;
             this.threadDelayedFreeList = new AtomicReference<>();
             this.sharedLock = sharedLock;
-            this.miBufDeque = new ArrayDequeBounded<MiByteBuf>(1024);
-            this.miBufMpscQueue = PlatformDependent.newMpscQueue(1024);
+            this.miBufLocalDeque = new ArrayDequeBounded<MiByteBuf>(1024);
+            this.miBufCrossThreadsQueue = sharedLock == null ?
+                    PlatformDependent.newMpscQueue(1024) : PlatformDependent.newFixedMpmcQueue(1024);
             this.blockDeque = new ArrayDequeBounded<Block>(1024);
             pageQueues = new PageQueue[] {
                     new PageQueue(1, 0), // placeholder, not used.
@@ -422,8 +423,8 @@ final class MiMallocByteBufAllocator {
             if (collectType == ABANDON) {
                 heapVisitPages(collectType, VISIT_TYPE_PAGE_MARK);
                 this.blockDeque.clear();
-                this.miBufDeque.clear();
-                this.miBufMpscQueue.clear();
+                this.miBufLocalDeque.clear();
+                this.miBufCrossThreadsQueue.clear();
                 freeReservedSegment();
             }
             // Free all current thread's delayed blocks.
@@ -1567,9 +1568,9 @@ final class MiMallocByteBufAllocator {
         }
 
         private MiByteBuf getMiByteBuf() {
-            MiByteBuf buf = this.miBufDeque.pollFirst();
+            MiByteBuf buf = this.miBufLocalDeque.pollFirst();
             if (buf == null) {
-                buf = this.miBufMpscQueue.poll();
+                buf = this.miBufCrossThreadsQueue.poll();
             }
             if (buf == null) {
                 buf = new MiByteBuf();
@@ -1951,7 +1952,7 @@ final class MiMallocByteBufAllocator {
             // thread-local free.
             page.freeBlockLocal(block, page.isInFull, ownerHeap);
             if (buf != null) {
-                ownerHeap.miBufDeque.offerFirst(buf);
+                ownerHeap.miBufLocalDeque.offerFirst(buf);
             }
         } else {
             StampedLock sharedLock;
@@ -1963,7 +1964,7 @@ final class MiMallocByteBufAllocator {
                     // Successfully acquired the sharedLock, use thread-local free.
                     page.freeBlockLocal(block, page.isInFull, ownerHeap);
                     if (buf != null) {
-                        ownerHeap.miBufDeque.offerFirst(buf);
+                        ownerHeap.miBufLocalDeque.offerFirst(buf);
                     }
                 } finally {
                     sharedLock.unlockWrite(lockStamp);
@@ -1972,7 +1973,7 @@ final class MiMallocByteBufAllocator {
                 // Use the generic multi-threaded-free path.
                 freeBlockMt(page, segment, block);
                 if (buf != null && ownerHeap != null) {
-                    segment.ownerHeap.miBufMpscQueue.offer(buf);
+                    ownerHeap.miBufCrossThreadsQueue.offer(buf);
                 }
             }
         }
