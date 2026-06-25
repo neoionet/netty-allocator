@@ -363,8 +363,7 @@ final class MiMallocByteBufAllocator {
             this.threadDelayedFreeList = new AtomicReference<>();
             this.sharedLock = sharedLock;
             this.miBufLocalDeque = new ArrayDequeBounded<MiByteBuf>(1024);
-            this.miBufCrossThreadsQueue = sharedLock == null ?
-                    PlatformDependent.newMpscQueue(1024) : PlatformDependent.newFixedMpmcQueue(1024);
+            this.miBufCrossThreadsQueue = PlatformDependent.newMpscQueue(1024);
             this.blockDeque = new ArrayDequeBounded<Block>(1024);
             pageQueues = new PageQueue[] {
                     new PageQueue(1, 0), // placeholder, not used.
@@ -1577,14 +1576,6 @@ final class MiMallocByteBufAllocator {
             }
             return buf;
         }
-
-        private MiByteBuf getFallbackMiByteBuf() {
-            MiByteBuf buf = this.miBufCrossThreadsQueue.poll();
-            if (buf == null) {
-                buf = new MiByteBuf();
-            }
-            return buf;
-        }
     }
 
     static final class PageQueue {
@@ -2197,7 +2188,7 @@ final class MiMallocByteBufAllocator {
         }
         Block block = page.freeList;
         if (buf == null) {
-            buf = heap.getFallbackMiByteBuf();
+            buf = new MiByteBuf();
         }
         page.freeList = block.nextBlock;
         buf.init(page, block, size, maxCapacity, isReAlloc);
