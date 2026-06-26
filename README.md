@@ -15,6 +15,7 @@ A high-performance Java port of the **mimalloc** allocator, tailored for **Netty
 * **Tailored for Netty**: Specifically designed to handle Netty's `ByteBuf` allocation with minimal overhead.
 * **High Throughput**: Optimized for multi-threaded network environments to ensure high and stable performance.
 * **Virtual-Threads Friendly**: Optimized for Project Loom, preventing the memory explosion typically caused by massive `ThreadLocal` usage in virtual thread scenarios.
+
 ---
 
 ## 🚀 Benchmark
@@ -24,7 +25,7 @@ A high-performance Java port of the **mimalloc** allocator, tailored for **Netty
 
 ---
 
-## ⚓ Requirements
+## 📮 Requirements
 
 | Requirement | Minimum Version |
 | :--- | :--- |
@@ -33,7 +34,7 @@ A high-performance Java port of the **mimalloc** allocator, tailored for **Netty
 
 ---
 
-## 📝 How to use
+## 📚 How to use
 
 ### 1. Maven dependencies:
 Add the following dependencies to your `pom.xml`:
