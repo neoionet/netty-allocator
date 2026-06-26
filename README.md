@@ -17,6 +17,12 @@ A high-performance Java port of the **mimalloc** allocator, tailored for **Netty
 * **Virtual-Threads Friendly**: Optimized for Project Loom, preventing the memory explosion typically caused by massive `ThreadLocal` usage in virtual thread scenarios.
 ---
 
+## 📈 Benchmark
+
+* **[Chart](https://neoionet.github.io/netty-allocator-benchmark-report/1.1.1/benchmark.html)**
+
+---
+
 ## ⚓ Requirements
 
 | Requirement | Minimum Version |
