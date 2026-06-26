@@ -9,7 +9,7 @@ A high-performance Java port of the **mimalloc** allocator, tailored for **Netty
 
 ---
 
-## 🚀 Key Features
+## 🎯 Key Features
 
 * **Mimalloc Powered**: Leverages mimalloc's advanced allocation strategies (free lists, local shards).
 * **Tailored for Netty**: Specifically designed to handle Netty's `ByteBuf` allocation with minimal overhead.
@@ -17,7 +17,7 @@ A high-performance Java port of the **mimalloc** allocator, tailored for **Netty
 * **Virtual-Threads Friendly**: Optimized for Project Loom, preventing the memory explosion typically caused by massive `ThreadLocal` usage in virtual thread scenarios.
 ---
 
-## 📈 Benchmark
+## 🚀 Benchmark
 
 * **[Report](https://neoionet.github.io/netty-allocator-benchmark-report/1.1.1/benchmark.html)**
 * **[Specification](https://neoionet.github.io/netty-allocator-benchmark-report/1.1.1/specification)**
@@ -33,7 +33,7 @@ A high-performance Java port of the **mimalloc** allocator, tailored for **Netty
 
 ---
 
-## 📖 How to use
+## 📝 How to use
 
 ### 1. Maven dependencies:
 Add the following dependencies to your `pom.xml`:
@@ -117,7 +117,7 @@ b.group(group)
     *   **Description:** Determines the page search strategy. `best` stands for **best-fit**, `first` stands for **first-fit**.
     *   **Default value:** `best`
 
-## 🌟 Acknowledgments
+## ⭐ Acknowledgments
 
 This project would not be possible without the following open-source works:
 
