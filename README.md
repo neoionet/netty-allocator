@@ -111,7 +111,7 @@ b.group(group)
 *   **`-Dio.github.neoionet.allocator.mimalloc.segment.mib`**
     *   **Allowed Values:** `4`, `8`, `16`, `32`
     *   **Description:** Sets the segment size in MiB.
-    *   **Default value:** `32`
+    *   **Default value:** `4`
 
 *   **`-Dio.github.neoionet.allocator.mimalloc.page.search.strategy`**
     *   **Allowed Values:** `best`, `first`
