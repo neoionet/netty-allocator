@@ -312,24 +312,36 @@ final class MiMallocByteBufAllocator {
         ABANDON
     }
 
-    private static final class ArrayDequeBounded<MiByteBuf> extends ArrayDeque<MiByteBuf> {
+    private static final class ArrayDequeBounded<E> {
         private final int capacity;
+        private final ArrayDeque<E> arrayDeque;
 
         public ArrayDequeBounded(int capacity) {
-            super(capacity);
             this.capacity = capacity;
+            this.arrayDeque = new ArrayDeque<>(capacity);
         }
 
-        public boolean offerFirst(MiByteBuf e) {
-            if (size() >= capacity) {
+        public boolean offerFirst(E e) {
+            if (this.arrayDeque.size() >= this.capacity) {
                 return false;
             }
-            return super.offerFirst(e);
+            return this.arrayDeque.offerFirst(e);
         }
 
-        @Override
-        public MiByteBuf pollFirst() {
-            return super.pollFirst();
+        public E pollFirst() {
+            return this.arrayDeque.pollFirst();
+        }
+
+        public void clear() {
+            this.arrayDeque.clear();
+        }
+
+        public int size() {
+            return this.arrayDeque.size();
+        }
+
+        public boolean isEmpty() {
+            return this.arrayDeque.isEmpty();
         }
     }
 
