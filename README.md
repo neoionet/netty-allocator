@@ -1,9 +1,8 @@
 # Netty mimalloc allocator
-
-<a href="#_"><img src="https://img.shields.io/badge/License-Apache%202.0-brightgreen.svg" alt="License"></a>
-<a href="#_"><img src="https://img.shields.io/badge/Java-1.8%2B-brightgreen.svg" alt="Java Version"></a>
-<a href="#_"><img src="https://img.shields.io/badge/Netty-4.2.10.Final%2B-brightgreen.svg" alt="Netty Version"></a>
-<a href="#_"><img src="https://img.shields.io/badge/VirtualThread-Friendly-brightgreen.svg" alt="Virtual Thread Friendly"></a>
+<a href="#"><img src="https://img.shields.io/badge/License-Apache%202.0-brightgreen.svg" alt="License"></a>
+<a href="#"><img src="https://img.shields.io/badge/Java-1.8%2B-brightgreen.svg" alt="Java Version"></a>
+<a href="#"><img src="https://img.shields.io/badge/Netty-4.2.10.Final%2B-brightgreen.svg" alt="Netty Version"></a>
+<a href="#"><img src="https://img.shields.io/badge/VirtualThread-Friendly-brightgreen.svg" alt="Virtual Thread Friendly"></a>
 
 A high-performance Java port of the **mimalloc** allocator, tailored for **Netty**.
 
