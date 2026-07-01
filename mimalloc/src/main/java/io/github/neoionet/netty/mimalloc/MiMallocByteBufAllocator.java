@@ -1544,7 +1544,7 @@ final class MiMallocByteBufAllocator {
             // Find start slot.
             if (idx <= 1) { // size == 8
                 assert size == 8;
-                start = 0;
+                start = 1;
             } else { // size > 8
                 assert size > 8;
                 assert pq.index > 1;
@@ -2214,7 +2214,9 @@ final class MiMallocByteBufAllocator {
     }
 
     private static int toWordSize(int size) {
-        return (size + WORD_SIZE_MASK) >> 3;
+        assert size >= 0;
+        size = (size + WORD_SIZE_MASK) >> 3;
+        return size == 0 ? 1 : size;
     }
 
     /**
@@ -2225,7 +2227,7 @@ final class MiMallocByteBufAllocator {
         assert size >= 0;
         int wSize = toWordSize(size);
         if (wSize <= 9) {
-            return (wSize == 0) ? 1 : wSize;
+            return wSize;
         }
         if (wSize > MEDIUM_BLOCK_WORD_SIZE_MAX) {
             return PAGE_QUEUE_BIN_LARGE_INDEX;
