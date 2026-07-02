@@ -19,8 +19,8 @@ A high-performance Java port of the **mimalloc** allocator, tailored for **Netty
 
 ## 🚀 Benchmark
 
-* **[Report](https://neoionet.github.io/netty-allocator-benchmark-report/1.1.1/benchmark.html)**
-* **[Specification](https://neoionet.github.io/netty-allocator-benchmark-report/1.1.1/specification.html)**
+* **[Report](https://neoionet.github.io/netty-allocator-benchmark-report/latest/benchmark.html)**
+* **[Specification](https://neoionet.github.io/netty-allocator-benchmark-report/latest/specification.html)**
 
 ---
 
