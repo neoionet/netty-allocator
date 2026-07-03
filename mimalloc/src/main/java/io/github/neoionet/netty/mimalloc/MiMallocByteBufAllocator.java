@@ -2367,14 +2367,6 @@ final class MiMallocByteBufAllocator {
                 return this;
             }
             // Reallocation required.
-            /*
-             * 1. The ByteBuf's block is a reusable node from the free list, representing a specific allocation range.
-             * 2. The ByteBuf may share the same instance with the block itself to avoid extra object creation,
-             *    therefore, we can't simply free the block.
-             * 3. If (this == this.block), then we create a shallow copy block,
-             *    pointing to the same allocation range, and release the copy instead.
-             * 4. The reallocation will make this ByteBuf not share the same instance with its original block anymore.
-             */
             MiMallocByteBufAllocator allocator = this.page.segment.parent;
             Page oldPage = this.page;
             Block oldBlock = this.block;
