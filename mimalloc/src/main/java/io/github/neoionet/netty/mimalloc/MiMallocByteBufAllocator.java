@@ -1902,6 +1902,9 @@ final class MiMallocByteBufAllocator {
         //     (2).If `ownerThread` is null, signals this segment is abandoned
         //         (the segment is in the abandoned queue, or it's a huge segment).
         private Thread ownerThread;
+        // If `ownerThread` is not null, then the `ownerHeap` must not be null.
+        // If `ownerThread` is null, then the `ownerHeap` might be null (segment in abandoned queue),
+        // or not null(huge segment).
         private LocalHeap ownerHeap;
         private final Span[] slices;
         private final int sliceEntries; // Entries in the `slices` array, at most `SLICE_COUNT`.
@@ -1955,12 +1958,10 @@ final class MiMallocByteBufAllocator {
         Segment segment = page.segment;
         assert segment != null;
         LocalHeap ownerHeap = segment.ownerHeap;
-        // If `ownerThread` is not null, then the `ownerHeap` must not be null.
-        // If `ownerThread` is null, then the `ownerHeap` might be null (segment in abandoned queue),
-        // or not null(huge segment).
-        assert segment.ownerThread == null || ownerHeap != null;
+        // If `segment.ownerThread == Thread.currentThread()`, means the current thread owns the `ownerHeap`,
+        // so the `ownerHeap` must not have been abandoned, so `ownerHeap` must not be null.
         if (segment.ownerThread == Thread.currentThread() && ownerHeap.sharedLock == null) {
-            // thread-local free.
+            // Event loop local free.
             page.freeBlockLocal(block, page.isInFull, ownerHeap);
             if (buf != null) {
                 ownerHeap.miBufLocalDeque.offerFirst(buf);
@@ -1972,7 +1973,7 @@ final class MiMallocByteBufAllocator {
                     // Try to acquire the sharedLock once, if failed, then use the multi-threaded-free path.
                     (lockStamp = sharedLock.tryWriteLock()) != 0) {
                 try {
-                    // Successfully acquired the sharedLock, use thread-local free.
+                    // Successfully acquired the sharedLock, use local free.
                     page.freeBlockLocal(block, page.isInFull, ownerHeap);
                     if (buf != null) {
                         ownerHeap.miBufLocalDeque.offerFirst(buf);
@@ -1983,6 +1984,8 @@ final class MiMallocByteBufAllocator {
             } else {
                 // Use the generic multi-threaded-free path.
                 freeBlockMt(page, segment, block);
+                // At a very low chance, the `ownerHeap` may already have been abandoned,
+                // but it's OK, as in that case, the `ownerHeap.miBufCrossThreadsQueue` will be eventually GC'ed anyway.
                 if (buf != null && ownerHeap != null) {
                     ownerHeap.miBufCrossThreadsQueue.offer(buf);
                 }
