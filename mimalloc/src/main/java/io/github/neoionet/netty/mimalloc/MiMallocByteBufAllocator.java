@@ -1976,10 +1976,10 @@ final class MiMallocByteBufAllocator {
             }
         } else {
             StampedLock sharedLock;
-            long lockStamp;
-            if (!page.isHuge && ownerHeap != null && (sharedLock = ownerHeap.sharedLock) != null &&
-                    // Try to acquire the sharedLock once, if failed, then use the multi-threaded-free path.
-                    (lockStamp = sharedLock.tryWriteLock()) != 0) {
+            if (!page.isHuge && ownerHeap != null && (sharedLock = ownerHeap.sharedLock) != null) {
+                // As we use stripped try-lock(spin) on the shared allocation path,
+                // so it's better we use exclusive-lock on the shared release path, to improve memory reusing.
+                final long lockStamp = sharedLock.writeLock();
                 try {
                     // Successfully acquired the sharedLock, use local free.
                     page.freeBlockLocal(block, page.isInFull, ownerHeap);
