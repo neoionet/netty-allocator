@@ -141,8 +141,10 @@ final class MiMallocByteBufAllocator {
 
     private final SharedHeapWrap[] sharedHeapWraps;
 
-    private static final int MAX_SHARED_HEAP_WRAPS_LENGTH =
-            MathUtil.safeFindNextPositivePowerOfTwo(NettyRuntime.availableProcessors() * 2);
+    private static final int MAX_SHARED_HEAP_WRAPS_LENGTH = MathUtil
+            .safeFindNextPositivePowerOfTwo(SystemPropertyUtil.getInt(
+                    "io.github.neoionet.allocator.mimalloc.maxSharedHeaps",
+                    NettyRuntime.availableProcessors() * 2));
 
     private final AtomicInteger heapsScanLength;
 
