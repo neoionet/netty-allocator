@@ -2097,8 +2097,7 @@ final class MiMallocByteBufAllocator {
                 SharedHeapWrap sharedHeapWrap;
                 StampedLock lock;
                 long lockStamp;
-                // Attempts range:[3, 10], to avoid spinning too long.
-                int attempts = Math.max(3, Math.min(currentHeapsScanLength, 10));
+                int attempts = Math.max(1, Integer.numberOfTrailingZeros(~mask));
                 for (int i = 0; i < attempts; i++) {
                     sharedHeapWrap = this.sharedHeapWraps[index + i & mask];
                     lock = sharedHeapWrap.lock;
