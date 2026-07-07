@@ -119,7 +119,7 @@ b.group(group)
 
 *   **`-Dio.github.neoionet.allocator.mimalloc.maxSharedHeaps`**
     *   **Description:** Sets the max shared heaps count.
-    *   **Default value:** `NettyRuntime.availableProcessors() * 2`
+    *   **Default value:** `NettyRuntime.availableProcessors() * 4`
 
 ## ⭐ Acknowledgments
 
