@@ -148,6 +148,10 @@ final class MiMallocByteBufAllocator {
                     "io.github.neoionet.allocator.mimalloc.maxSharedHeaps",
                     NettyRuntime.availableProcessors() * 4));
 
+    // The number references the default value of `glibc.pthread.mutex_spin_count`, see:
+    // https://sourceware.org/glibc/manual/latest/html_mono/libc.html#index-glibc_002epthread_002emutex_005fspin_005fcount
+    private static final int MAX_SHARED_HEAP_LOCK_SPIN_COUNT = 100;
+
     private final AtomicInteger heapsScanLength;
 
     // Default segment size: 4 MiB.
@@ -2102,11 +2106,8 @@ final class MiMallocByteBufAllocator {
                 StampedLock lock;
                 long lockStamp;
                 int attempts = currentHeapsScanLength >= MAX_SHARED_HEAP_WRAPS_LENGTH ?
-                        // The number 100 references the default value of `glibc.pthread.mutex_spin_count`, see:
-                        // https://sourceware.org/glibc/manual/latest/html_mono/libc.html#index-glibc_002epthread_002emutex_005fspin_005fcount
-                        100 :
-                        // The `Integer.numberOfTrailingZeros(~mask)` means `log2(currentHeapsScanLength)`.
-                        Math.max(1, Integer.numberOfTrailingZeros(~mask));
+                        MAX_SHARED_HEAP_LOCK_SPIN_COUNT :
+                        Math.min(currentHeapsScanLength << 1, MAX_SHARED_HEAP_LOCK_SPIN_COUNT);
                 for (int i = 0; i < attempts; i++) {
                     sharedHeapWrap = this.sharedHeapWraps[index + i & mask];
                     lock = sharedHeapWrap.lock;
