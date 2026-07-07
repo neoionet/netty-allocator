@@ -117,6 +117,10 @@ b.group(group)
     *   **Description:** Determines the page search strategy. `best` stands for **best-fit**, `first` stands for **first-fit**.
     *   **Default value:** `best`
 
+*   **`-Dio.github.neoionet.allocator.mimalloc.maxSharedHeaps`**
+    *   **Description:** Sets the max shared heaps count.
+    *   **Default value:** `NettyRuntime.availableProcessors() * 2`
+
 ## ⭐ Acknowledgments
 
 This project would not be possible without the following open-source works:
