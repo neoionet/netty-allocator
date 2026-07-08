@@ -1968,18 +1968,18 @@ final class MiMallocByteBufAllocator {
         LocalHeap ownerHeap = segment.ownerHeap;
         // If `segment.ownerThread == Thread.currentThread()`, means the current thread owns the `ownerHeap`,
         // so the `ownerHeap` must not have been abandoned, so `ownerHeap` must not be null.
-        if (segment.ownerThread == Thread.currentThread() && ownerHeap.sharedLock == null) {
-            // Event loop local free.
-            page.freeBlockLocal(block, page.isInFull, ownerHeap);
-            if (buf != null) {
-                ownerHeap.miBufLocalDeque.offerFirst(buf);
-            }
-        } else {
-            StampedLock sharedLock;
-            if (!page.isHuge && ownerHeap != null && (sharedLock = ownerHeap.sharedLock) != null) {
-                // As we use stripped try-lock(spin) on the shared allocation path,
-                // so it's better we use exclusive-lock on the shared release path, to improve memory reusing.
-                final long lockStamp = sharedLock.writeLock();
+        if (segment.ownerThread == Thread.currentThread()) {
+            if (ownerHeap.sharedLock == null) {
+                // Event loop local free.
+                page.freeBlockLocal(block, page.isInFull, ownerHeap);
+                if (buf != null) {
+                    ownerHeap.miBufLocalDeque.offerFirst(buf);
+                }
+            } else {
+                // Allocation and deallocation are likely thread-confined operations.
+                // Since we use stripped try-lock on the shared allocation path,
+                // we acquire the lock exclusively on the shared deallocation path, to improve memory reuse.
+                final long lockStamp = ownerHeap.sharedLock.writeLock();
                 try {
                     // Successfully acquired the sharedLock, use local free.
                     page.freeBlockLocal(block, page.isInFull, ownerHeap);
@@ -1987,16 +1987,16 @@ final class MiMallocByteBufAllocator {
                         ownerHeap.miBufLocalDeque.offerFirst(buf);
                     }
                 } finally {
-                    sharedLock.unlockWrite(lockStamp);
+                    ownerHeap.sharedLock.unlockWrite(lockStamp);
                 }
-            } else {
-                // Use the generic multi-threaded-free path.
-                freeBlockMt(page, segment, block);
-                // At a very low chance, the `ownerHeap` may already have been abandoned,
-                // but it's OK, as in that case, the `ownerHeap.miBufCrossThreadsQueue` will be eventually GC'ed anyway.
-                if (buf != null && ownerHeap != null) {
-                    ownerHeap.miBufCrossThreadsQueue.offer(buf);
-                }
+            }
+        } else {
+            // Use the generic multi-threaded-free path.
+            freeBlockMt(page, segment, block);
+            // At a very low chance, the `ownerHeap` may already have been abandoned,
+            // but it's OK, as in that case, the `ownerHeap.miBufCrossThreadsQueue` will be eventually GC'ed anyway.
+            if (buf != null && ownerHeap != null) {
+                ownerHeap.miBufCrossThreadsQueue.offer(buf);
             }
         }
     }
