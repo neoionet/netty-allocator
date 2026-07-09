@@ -374,6 +374,7 @@ final class MiMallocByteBufAllocator {
         private final ArrayDequeBounded<MiByteBuf> miBufLocalDeque;
         private final Queue<MiByteBuf> miBufCrossThreadsQueue;
         private final ArrayDequeBounded<Block> blockDeque;
+        private final Queue<DelayedBlock> delayedBlockDeque;
 
         LocalHeap(MiMallocByteBufAllocator allocator, StampedLock sharedLock) {
             segmentTld = new SegmentTld();
@@ -385,6 +386,7 @@ final class MiMallocByteBufAllocator {
             this.miBufLocalDeque = new ArrayDequeBounded<MiByteBuf>(1024);
             this.miBufCrossThreadsQueue = PlatformDependent.newMpscQueue(1024);
             this.blockDeque = new ArrayDequeBounded<Block>(1024);
+            this.delayedBlockDeque = MiByteBufUtil.newFixedSpmcQueue(1024);
             pageQueues = new PageQueue[] {
                     new PageQueue(1, 0), // placeholder, not used.
                     new PageQueue(1, 1), new PageQueue(2, 2),
@@ -444,6 +446,7 @@ final class MiMallocByteBufAllocator {
                 this.blockDeque.clear();
                 this.miBufLocalDeque.clear();
                 this.miBufCrossThreadsQueue.clear();
+                this.delayedBlockDeque.clear();
                 freeReservedSegment();
             }
             // Free all current thread's delayed blocks.
@@ -545,6 +548,11 @@ final class MiMallocByteBufAllocator {
                         current = this.threadDelayedFreeList.get();
                         delayedBlock.nextDelayedBlock = current;
                     } while (!this.threadDelayedFreeList.compareAndSet(current, delayedBlock));
+                } else {
+                    delayedBlock.page = null;
+                    delayedBlock.block = null;
+                    delayedBlock.nextDelayedBlock = null;
+                    this.delayedBlockDeque.offer(delayedBlock);
                 }
                 delayedBlock = next;
             }
@@ -768,6 +776,17 @@ final class MiMallocByteBufAllocator {
                 block.nextBlock = null;
             }
             return block;
+        }
+
+        private DelayedBlock getDelayedBlock(Page page, Block block) {
+            DelayedBlock delayedBlock;
+            if ((delayedBlock = delayedBlockDeque.poll()) != null) {
+                delayedBlock.page = page;
+                delayedBlock.block = block;
+            } else {
+                delayedBlock =  new DelayedBlock(page, block);
+            }
+            return delayedBlock;
         }
 
         private void pageFreeListExtend(Page page, int bSize, int extend) {
@@ -1858,8 +1877,8 @@ final class MiMallocByteBufAllocator {
     }
 
     static final class DelayedBlock {
-        private final Page page;
-        private final Block block;
+        Page page;
+        Block block;
         private DelayedBlock nextDelayedBlock;
         DelayedBlock(Page page, Block block) {
             this.page = page;
@@ -2027,11 +2046,11 @@ final class MiMallocByteBufAllocator {
         // `useDelayed` will only be true if `threadDelayedFreeFlag == USE_DELAYED_FREE`.
         if (useDelayed) {
             try {
-                DelayedBlock delayedBlock = new DelayedBlock(page, block);
                 // Racy read on `heap`, but ok because `DELAYED_FREEING` is set.
                 // (see `heapCollectAbandon`)
                 LocalHeap heap = page.segment.ownerHeap;
                 assert heap != null;
+                DelayedBlock delayedBlock = heap.getDelayedBlock(page, block);
                 // Add to the delayed free list of this heap.
                 DelayedBlock dfree;
                 do {
