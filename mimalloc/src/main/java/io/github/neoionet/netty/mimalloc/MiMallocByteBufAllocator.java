@@ -1926,8 +1926,8 @@ final class MiMallocByteBufAllocator {
         //     The `ownerThread` is the thread who create this segment.
         // For thread-local heap:
         //     (1).The `ownerThread` is the thread who create/reclaim this segment.
-        //     (2).If `ownerThread` is null, signals this segment is abandoned
-        //         (the segment is in the abandoned queue, or it's a huge segment).
+        //     (2).If `ownerThread` is null, signals this segment is abandoned(the segment is in the abandoned queue),
+        //         or it's a huge segment.
         private Thread ownerThread;
         // If `ownerThread` is not null, then the `ownerHeap` must not be null.
         // If `ownerThread` is null, then the `ownerHeap` might be null (segment in abandoned queue),
@@ -1988,23 +1988,18 @@ final class MiMallocByteBufAllocator {
         // If `segment.ownerThread == Thread.currentThread()`, means the current thread owns the `ownerHeap`,
         // so the `ownerHeap` must not have been abandoned, so `ownerHeap` must not be null.
         if (segment.ownerThread == Thread.currentThread()) {
-            if (ownerHeap.sharedLock == null) {
+            StampedLock lock = ownerHeap.sharedLock;
+            if (lock == null) {
                 // Event loop local free.
-                page.freeBlockLocal(block, page.isInFull, ownerHeap);
-                if (buf != null) {
-                    ownerHeap.miBufLocalDeque.offerFirst(buf);
-                }
+                freeLocal(page, block, buf, ownerHeap);
             } else { // Allocation and deallocation are likely happens in the same thread.
                 // We acquire the lock exclusively on the shared deallocation path to improve memory reuse.
-                final long lockStamp = ownerHeap.sharedLock.writeLock();
+                final long lockStamp = lock.writeLock();
                 try {
-                    // Successfully acquired the sharedLock, use local free.
-                    page.freeBlockLocal(block, page.isInFull, ownerHeap);
-                    if (buf != null) {
-                        ownerHeap.miBufLocalDeque.offerFirst(buf);
-                    }
+                    // Successfully acquired the lock, use local free.
+                    freeLocal(page, block, buf, ownerHeap);
                 } finally {
-                    ownerHeap.sharedLock.unlockWrite(lockStamp);
+                    lock.unlockWrite(lockStamp);
                 }
             }
         } else {
@@ -2015,6 +2010,14 @@ final class MiMallocByteBufAllocator {
             if (buf != null && ownerHeap != null) {
                 ownerHeap.miBufCrossThreadsQueue.offer(buf);
             }
+        }
+    }
+
+    private static void freeLocal(Page page, Block block, MiByteBuf buf, LocalHeap ownerHeap) {
+        assert ownerHeap != null;
+        page.freeBlockLocal(block, page.isInFull, ownerHeap);
+        if (buf != null) {
+            ownerHeap.miBufLocalDeque.offerFirst(buf);
         }
     }
 
