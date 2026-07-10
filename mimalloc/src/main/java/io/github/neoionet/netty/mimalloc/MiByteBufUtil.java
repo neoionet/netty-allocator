@@ -23,14 +23,9 @@ import io.netty.util.AsciiString;
 import io.netty.util.concurrent.FastThreadLocal;
 import io.netty.util.concurrent.FastThreadLocalThread;
 import io.netty.util.internal.PlatformDependent;
-import io.netty.util.internal.shaded.org.jctools.queues.SpmcArrayQueue;
-import io.netty.util.internal.shaded.org.jctools.queues.atomic.SpmcAtomicArrayQueue;
-
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
-import java.util.Queue;
-
 import static io.netty.util.internal.PlatformDependent.hasUnsafe;
 import static io.netty.util.internal.StringUtil.isSurrogate;
 
@@ -371,10 +366,6 @@ final class MiByteBufUtil {
             return new MiUnpooledUnsafeDirectByteBuf(alloc, initialCapacity, maxCapacity);
         }
         return new MiUnpooledDirectByteBuf(alloc, initialCapacity, maxCapacity);
-    }
-
-    static <T> Queue<T> newFixedSpmcQueue(int capacity) {
-        return hasUnsafe() ? new SpmcArrayQueue<T>(capacity) : new SpmcAtomicArrayQueue<T>(capacity);
     }
 
     private MiByteBufUtil() { }

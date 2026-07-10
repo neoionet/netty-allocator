@@ -386,7 +386,7 @@ final class MiMallocByteBufAllocator {
             this.miBufLocalDeque = new ArrayDequeBounded<MiByteBuf>(1024);
             this.miBufCrossThreadsQueue = PlatformDependent.newFixedMpscQueue(1024);
             this.blockDeque = new ArrayDequeBounded<Block>(1024);
-            this.delayedBlockDeque = MiByteBufUtil.newFixedSpmcQueue(1024);
+            this.delayedBlockDeque = PlatformDependent.newFixedMpmcQueue(1024);
             pageQueues = new PageQueue[] {
                     new PageQueue(1, 0), // placeholder, not used.
                     new PageQueue(1, 1), new PageQueue(2, 2),
