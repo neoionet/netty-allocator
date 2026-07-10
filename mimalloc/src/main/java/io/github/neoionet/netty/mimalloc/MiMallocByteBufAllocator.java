@@ -384,7 +384,7 @@ final class MiMallocByteBufAllocator {
             this.threadDelayedFreeList = new AtomicReference<>();
             this.sharedLock = sharedLock;
             this.miBufLocalDeque = new ArrayDequeBounded<MiByteBuf>(1024);
-            this.miBufCrossThreadsQueue = PlatformDependent.newMpscQueue(1024);
+            this.miBufCrossThreadsQueue = PlatformDependent.newFixedMpscQueue(1024);
             this.blockDeque = new ArrayDequeBounded<Block>(1024);
             this.delayedBlockDeque = MiByteBufUtil.newFixedSpmcQueue(1024);
             pageQueues = new PageQueue[] {
