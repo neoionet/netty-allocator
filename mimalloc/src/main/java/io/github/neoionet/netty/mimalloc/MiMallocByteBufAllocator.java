@@ -1994,10 +1994,8 @@ final class MiMallocByteBufAllocator {
                 if (buf != null) {
                     ownerHeap.miBufLocalDeque.offerFirst(buf);
                 }
-            } else {
-                // Allocation and deallocation are likely thread-confined operations.
-                // Since we use stripped try-lock on the shared allocation path,
-                // we acquire the lock exclusively on the shared deallocation path, to improve memory reuse.
+            } else { // Allocation and deallocation are likely happens in the same thread.
+                // We acquire the lock exclusively on the shared deallocation path to improve memory reuse.
                 final long lockStamp = ownerHeap.sharedLock.writeLock();
                 try {
                     // Successfully acquired the sharedLock, use local free.
