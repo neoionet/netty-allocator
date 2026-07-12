@@ -48,12 +48,12 @@ Add the following dependencies to your `pom.xml`:
         <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty-common</artifactId>
-            <version>4.2.10.Final</version>
+            <version>4.2.16.Final</version>
         </dependency>
         <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty-buffer</artifactId>
-            <version>4.2.10.Final</version>
+            <version>4.2.16.Final</version>
         </dependency>
     </dependencies>
 ```
@@ -64,7 +64,7 @@ If you want to use the mimalloc allocator within your server or client transport
        <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty-transport</artifactId>
-            <version>4.2.10.Final</version>
+            <version>4.2.16.Final</version>
         </dependency>
     </dependencies>
 ```
