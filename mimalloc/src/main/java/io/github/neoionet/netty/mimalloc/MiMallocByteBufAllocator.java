@@ -1988,7 +1988,7 @@ final class MiMallocByteBufAllocator {
         // If `segment.ownerThread == Thread.currentThread()`, means the current thread owns the `ownerHeap`,
         // so the `ownerHeap` must not have been abandoned, so `ownerHeap` must not be null.
         if (segment.ownerThread == Thread.currentThread()) {
-            StampedLock lock = ownerHeap.sharedLock;
+            final StampedLock lock = ownerHeap.sharedLock;
             if (lock == null) {
                 // Event loop local free.
                 freeLocal(page, block, buf, ownerHeap);
@@ -2003,12 +2003,24 @@ final class MiMallocByteBufAllocator {
                 }
             }
         } else {
-            // Use the generic multi-threaded-free path.
-            freeBlockMt(page, segment, block);
-            // At a very low chance, the `ownerHeap` may already have been abandoned,
-            // but it's OK, as in that case, the `ownerHeap.miBufCrossThreadsQueue` will be eventually GC'ed anyway.
-            if (buf != null && ownerHeap != null) {
-                ownerHeap.miBufCrossThreadsQueue.offer(buf);
+            StampedLock sharedLock;
+            long lockStamp;
+            if (!page.isHuge && ownerHeap != null && (sharedLock = ownerHeap.sharedLock) != null
+                    && (lockStamp = sharedLock.tryWriteLock()) != 0) {
+                try {
+                    // Successfully acquired the lock, use local free.
+                    freeLocal(page, block, buf, ownerHeap);
+                } finally {
+                    sharedLock.unlockWrite(lockStamp);
+                }
+            } else {
+                // Use the generic multi-threaded-free path.
+                freeBlockMt(page, segment, block);
+                // At a very low chance, the `ownerHeap` may already have been abandoned,
+                // but it's OK, as in that case, the `ownerHeap.miBufCrossThreadsQueue` will be eventually GC'ed anyway.
+                if (buf != null && ownerHeap != null) {
+                    ownerHeap.miBufCrossThreadsQueue.offer(buf);
+                }
             }
         }
     }
@@ -2118,6 +2130,7 @@ final class MiMallocByteBufAllocator {
             long threadId = Thread.currentThread().getId();
             int currentHeapsScanLength;
             int expansions = 0;
+            boolean ableExpansion;
             do {
                 currentHeapsScanLength = this.heapsScanLength.get();
                 int mask = currentHeapsScanLength - 1;
@@ -2125,9 +2138,9 @@ final class MiMallocByteBufAllocator {
                 SharedHeapWrap sharedHeapWrap;
                 StampedLock lock;
                 long lockStamp;
-                int attempts = currentHeapsScanLength >= MAX_SHARED_HEAP_WRAPS_LENGTH ?
-                        MAX_SHARED_HEAP_LOCK_SPIN_COUNT :
-                        Math.min(currentHeapsScanLength << 1, MAX_SHARED_HEAP_LOCK_SPIN_COUNT);
+                ableExpansion = currentHeapsScanLength < MAX_SHARED_HEAP_WRAPS_LENGTH;
+                int attempts = ableExpansion ? Math.min(currentHeapsScanLength << 1, MAX_SHARED_HEAP_LOCK_SPIN_COUNT) :
+                        MAX_SHARED_HEAP_LOCK_SPIN_COUNT;
                 for (int i = 0; i < attempts; i++) {
                     sharedHeapWrap = this.sharedHeapWraps[index + i & mask];
                     lock = sharedHeapWrap.lock;
@@ -2145,7 +2158,7 @@ final class MiMallocByteBufAllocator {
                     }
                 }
                 expansions++;
-            } while (expansions <= 3 && tryExpandHeapsScanLength(currentHeapsScanLength));
+            } while (ableExpansion && expansions <= 3 && tryExpandHeapsScanLength(currentHeapsScanLength));
         }
         assert this.sharedHeapWraps[0] != null && this.sharedHeapWraps[0].heap != null;
         LocalHeap heap = this.sharedHeapWraps[0].heap;
