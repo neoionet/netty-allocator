@@ -1986,13 +1986,15 @@ final class MiMallocByteBufAllocator {
         assert segment != null;
         LocalHeap ownerHeap = segment.ownerHeap;
         // If `segment.ownerThread == Thread.currentThread()`, means the current thread owns the `ownerHeap`,
-        // so the `ownerHeap` must not have been abandoned, so `ownerHeap` must not be null.
+        // so the `ownerHeap` must not have been abandoned, so `ownerHeap` must not be null,
+        // and the segment must not be a huge segment.
         if (segment.ownerThread == Thread.currentThread()) {
             final StampedLock lock = ownerHeap.sharedLock;
             if (lock == null) {
                 // Event loop local free.
                 freeLocal(page, block, buf, ownerHeap);
-            } else { // Allocation and deallocation are likely happens in the same thread.
+            } else {
+                // Allocation and deallocation are likely happens in the same thread.
                 // We acquire the lock exclusively on the shared deallocation path to improve memory reuse.
                 final long lockStamp = lock.writeLock();
                 try {
