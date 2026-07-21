@@ -947,9 +947,9 @@ final class MiMallocByteBufAllocator {
         }
 
         // Mark a specific segment as abandoned,
-        // and clears the ownerThread.
+        // and clears the ownerThreadId.
         private void segmentMarkAbandoned(Segment segment) {
-            segment.ownerThread = null;
+            segment.ownerThreadId = null;
             segment.ownerHeap = null;
             segment.parent.abandonedSegmentDeque.offer(segment);
             segment.parent.abandonedSegmentCount.incrementAndGet();
@@ -958,7 +958,7 @@ final class MiMallocByteBufAllocator {
         // Reclaim an abandoned segment; returns null if the segment was freed.
         // Return `RECLAIMED_SEGMENT_FLAG` if it reclaimed a page of the right block size that was not full.
         private Object segmentReclaim(Segment segment, int requestedBlockSize, boolean checkRightPageReclaimed) {
-            segment.ownerThread = Thread.currentThread().getId();
+            segment.ownerThreadId = Thread.currentThread().getId();
             segment.ownerHeap = this;
             segment.abandonedVisits = 0;
             // For all slices
@@ -1328,7 +1328,7 @@ final class MiMallocByteBufAllocator {
         }
 
         private boolean isSegmentAbandoned(Segment segment) {
-            return segment.ownerThread == null;
+            return segment.ownerThreadId == null;
         }
 
         private void spanQueueDelete(SpanQueue sq, Span span) {
@@ -1406,7 +1406,7 @@ final class MiMallocByteBufAllocator {
             live blocks (reachable through other threads). Such segments
             are "abandoned" and will be reclaimed by other threads to
             reuse their pages and/or free them eventually. The
-            `ownerThread` of such segments is null.
+            `ownerThreadId` of such segments is null.
 
             Moreover, if threads are looking for a fresh segment, they
             will first consider abandoned segments.
@@ -1923,14 +1923,14 @@ final class MiMallocByteBufAllocator {
         private final MiMallocByteBufAllocator parent;
         private final int segmentSize;
         // For shared heap:
-        //     The `ownerThread` is the thread who create this segment.
+        //     The `ownerThreadId` is the id of the thread who create this segment.
         // For thread-local heap:
-        //     (1).The `ownerThread` is the thread who create/reclaim this segment.
-        //     (2).If `ownerThread` is null, signals this segment is abandoned(the segment is in the abandoned queue),
+        //     (1).The `ownerThreadId` is the id of the thread who create/reclaim this segment.
+        //     (2).If `ownerThreadId` is null, signals this segment is abandoned(the segment is in the abandoned queue),
         //         or it's a huge segment.
-        private Long ownerThread;
-        // If `ownerThread` is not null, then the `ownerHeap` must not be null.
-        // If `ownerThread` is null, then the `ownerHeap` might be null (segment in abandoned queue),
+        private Long ownerThreadId;
+        // If `ownerThreadId` is not null, then the `ownerHeap` must not be null.
+        // If `ownerThreadId` is null, then the `ownerHeap` might be null (segment in abandoned queue),
         // or not null(huge segment).
         private LocalHeap ownerHeap;
         private final Span[] slices;
@@ -1942,7 +1942,7 @@ final class MiMallocByteBufAllocator {
         private int abandonedVisits;
         private final SegmentKind kind;
         // Only used for huge segment freeing.
-        private final AtomicReference<Long> hugeSegmentOwnerThread;
+        private final AtomicReference<Long> hugeSegmentOwnerThreadId;
 
         Segment(MiMallocByteBufAllocator parent, int segmentSize, int segmentSlices, SegmentKind kind,
                 AbstractByteBuf delegate, LocalHeap heap) {
@@ -1950,12 +1950,12 @@ final class MiMallocByteBufAllocator {
             this.delegate = delegate;
             if (kind == SEGMENT_HUGE) {
                 this.slices = new Span[1];
-                hugeSegmentOwnerThread = new AtomicReference<Long>();
+                hugeSegmentOwnerThreadId = new AtomicReference<Long>();
             } else { // normal segment
-                this.ownerThread = Thread.currentThread().getId();
+                this.ownerThreadId = Thread.currentThread().getId();
                 // one more slice for loop convenient.
                 this.slices = new Span[segmentSlices + 1];
-                this.hugeSegmentOwnerThread = null;
+                this.hugeSegmentOwnerThreadId = null;
             }
             this.ownerHeap = heap;
             this.sliceEntries = segmentSlices;
@@ -1985,10 +1985,10 @@ final class MiMallocByteBufAllocator {
         Segment segment = page.segment;
         assert segment != null;
         LocalHeap ownerHeap = segment.ownerHeap;
-        // If `segment.ownerThread == Thread.currentThread()`, means the current thread owns the `ownerHeap`,
+        // If `segment.ownerThreadId == Thread.currentThread().getId()`, means the current thread owns the `ownerHeap`,
         // so the `ownerHeap` must not have been abandoned, so `ownerHeap` must not be null,
         // and the segment must not be a huge segment.
-        if (segment.ownerThread == Thread.currentThread().getId()) {
+        if (segment.ownerThreadId == Thread.currentThread().getId()) {
             final StampedLock lock = ownerHeap.sharedLock;
             if (lock == null) {
                 // Event loop local free.
@@ -2089,11 +2089,11 @@ final class MiMallocByteBufAllocator {
 
     // Free huge block, either by another thread or current thread.
     private void segmentHugePageFree(Segment segment, Page page, Block block) {
-        // Huge page segments are always abandoned(`ownerThread` and `hugeSegmentOwnerThread.get()` are `null`)
+        // Huge page segments are always abandoned(`ownerThreadId` and `hugeSegmentOwnerThreadId.get()` are `null`)
         // after creation, and can be freed immediately by any thread claim it and free.
         // If this is the last reference, the CAS should always succeed.
-        assert segment.hugeSegmentOwnerThread != null;
-        if (segment.hugeSegmentOwnerThread.compareAndSet(null, Thread.currentThread().getId())) {
+        assert segment.hugeSegmentOwnerThreadId != null;
+        if (segment.hugeSegmentOwnerThreadId.compareAndSet(null, Thread.currentThread().getId())) {
             block.nextBlock = page.freeList;
             page.freeList = block;
             page.usedBlocks--;
@@ -2103,7 +2103,7 @@ final class MiMallocByteBufAllocator {
             // But a huge segment should never have been offered to the `abandonedSegmentDeque`.
             assert segment.ownerHeap != null;
             // This is safe.
-            // After the `hugeSegmentOwnerThread` CAS success,
+            // After the `hugeSegmentOwnerThreadId` CAS success,
             // this huge segment should be accessed only by current thread.
             segment.ownerHeap.segmentPageFree(page);
             assert segment.usedPages == 0;
