@@ -1872,8 +1872,8 @@ final class MiMallocByteBufAllocator {
     }
 
     static final class Block {
-        private int blockAdjustment;
-        private Block nextBlock;
+        int blockAdjustment;
+        Block nextBlock;
 
         Block(int blockAdjustment, Block nextBlock) {
             this.blockAdjustment = blockAdjustment;
