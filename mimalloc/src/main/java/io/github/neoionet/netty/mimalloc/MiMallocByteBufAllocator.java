@@ -2160,6 +2160,9 @@ final class MiMallocByteBufAllocator {
                             lock.unlockWrite(lockStamp);
                         }
                     }
+                    if (!ableExpansion) { // signals heavy contention.
+                        Thread.yield(); // yield to improve progression.
+                    }
                 }
             } while (ableExpansion && ++expansions <= 3 && tryExpandHeapsScanLength(currentHeapsScanLength));
         }
