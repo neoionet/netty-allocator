@@ -2161,8 +2161,7 @@ final class MiMallocByteBufAllocator {
                         }
                     }
                 }
-                expansions++;
-            } while (ableExpansion && expansions <= 3 && tryExpandHeapsScanLength(currentHeapsScanLength));
+            } while (ableExpansion && ++expansions <= 3 && tryExpandHeapsScanLength(currentHeapsScanLength));
         }
         assert this.sharedHeapWraps[0] != null && this.sharedHeapWraps[0].heap != null;
         LocalHeap heap = this.sharedHeapWraps[0].heap;
