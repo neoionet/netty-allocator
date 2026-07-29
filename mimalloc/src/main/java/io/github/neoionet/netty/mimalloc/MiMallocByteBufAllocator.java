@@ -7,7 +7,6 @@ import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.util.ByteProcessor;
 import io.netty.util.CharsetUtil;
-import io.netty.util.IllegalReferenceCountException;
 import io.netty.util.NettyRuntime;
 import io.netty.util.concurrent.FastThreadLocal;
 import io.netty.util.concurrent.FastThreadLocalThread;
@@ -2419,19 +2418,11 @@ final class MiMallocByteBufAllocator {
             Block oldBlock = this.block;
             int baseOldRootIndex = adjustment;
             int oldCapacity = length;
-            AbstractByteBuf oldRoot = rootParent();
+            AbstractByteBuf oldRoot = rootParent;
             allocator.reallocate(newCapacity, maxCapacity(), this);
             oldRoot.getBytes(baseOldRootIndex, this, 0, oldCapacity);
             allocator.free(oldPage, oldBlock, null);
             return this;
-        }
-
-        private AbstractByteBuf rootParent() {
-            final AbstractByteBuf rootParent = this.rootParent;
-            if (rootParent != null) {
-                return rootParent;
-            }
-            throw new IllegalReferenceCountException();
         }
 
         @Override
@@ -2446,12 +2437,12 @@ final class MiMallocByteBufAllocator {
 
         @Override
         public ByteBufAllocator alloc() {
-            return rootParent().alloc();
+            return rootParent.alloc();
         }
 
         @Override
         public ByteOrder order() {
-            return rootParent().order();
+            return rootParent.order();
         }
 
         @Override
@@ -2461,12 +2452,12 @@ final class MiMallocByteBufAllocator {
 
         @Override
         public boolean isDirect() {
-            return rootParent().isDirect();
+            return rootParent.isDirect();
         }
 
         @Override
         public int arrayOffset() {
-            return idx(rootParent().arrayOffset());
+            return idx(rootParent.arrayOffset());
         }
 
         @Override
@@ -2489,7 +2480,7 @@ final class MiMallocByteBufAllocator {
         @Override
         public ByteBuffer nioBuffer(int index, int length) {
             checkIndex(index, length);
-            return rootParent().nioBuffer(idx(index), length);
+            return rootParent.nioBuffer(idx(index), length);
         }
 
         @Override
@@ -2500,7 +2491,7 @@ final class MiMallocByteBufAllocator {
 
         private ByteBuffer internalNioBuffer() {
             if (tmpNioBuf == null) {
-                tmpNioBuf = rootParent().nioBuffer(adjustment, maxFastCapacity);
+                tmpNioBuf = rootParent.nioBuffer(adjustment, maxFastCapacity);
             }
             return (ByteBuffer) tmpNioBuf.clear();
         }
@@ -2508,7 +2499,7 @@ final class MiMallocByteBufAllocator {
         @Override
         public ByteBuffer[] nioBuffers(int index, int length) {
             checkIndex(index, length);
-            return rootParent().nioBuffers(idx(index), length);
+            return rootParent.nioBuffers(idx(index), length);
         }
 
         @Override
@@ -2519,136 +2510,136 @@ final class MiMallocByteBufAllocator {
         @Override
         public byte[] array() {
             ensureAccessible();
-            return rootParent().array();
+            return rootParent.array();
         }
 
         @Override
         public ByteBuf copy(int index, int length) {
             checkIndex(index, length);
-            return rootParent().copy(idx(index), length);
+            return rootParent.copy(idx(index), length);
         }
 
         @Override
         public int nioBufferCount() {
-            return rootParent().nioBufferCount();
+            return rootParent.nioBufferCount();
         }
 
         @Override
         protected byte _getByte(int index) {
-            return ((MiByteBufAdapter) rootParent())._getByte(idx(index));
+            return ((MiByteBufAdapter) rootParent)._getByte(idx(index));
         }
 
         @Override
         protected short _getShort(int index) {
-            return ((MiByteBufAdapter) rootParent())._getShort(idx(index));
+            return ((MiByteBufAdapter) rootParent)._getShort(idx(index));
         }
 
         @Override
         protected short _getShortLE(int index) {
-            return ((MiByteBufAdapter) rootParent())._getShortLE(idx(index));
+            return ((MiByteBufAdapter) rootParent)._getShortLE(idx(index));
         }
 
         @Override
         protected int _getUnsignedMedium(int index) {
-            return ((MiByteBufAdapter) rootParent())._getUnsignedMedium(idx(index));
+            return ((MiByteBufAdapter) rootParent)._getUnsignedMedium(idx(index));
         }
 
         @Override
         protected int _getUnsignedMediumLE(int index) {
-            return ((MiByteBufAdapter) rootParent())._getUnsignedMediumLE(idx(index));
+            return ((MiByteBufAdapter) rootParent)._getUnsignedMediumLE(idx(index));
         }
 
         @Override
         protected int _getInt(int index) {
-            return ((MiByteBufAdapter) rootParent())._getInt(idx(index));
+            return ((MiByteBufAdapter) rootParent)._getInt(idx(index));
         }
 
         @Override
         protected int _getIntLE(int index) {
-            return ((MiByteBufAdapter) rootParent())._getIntLE(idx(index));
+            return ((MiByteBufAdapter) rootParent)._getIntLE(idx(index));
         }
 
         @Override
         protected long _getLong(int index) {
-            return ((MiByteBufAdapter) rootParent())._getLong(idx(index));
+            return ((MiByteBufAdapter) rootParent)._getLong(idx(index));
         }
 
         @Override
         protected long _getLongLE(int index) {
-            return ((MiByteBufAdapter) rootParent())._getLongLE(idx(index));
+            return ((MiByteBufAdapter) rootParent)._getLongLE(idx(index));
         }
 
         @Override
         public ByteBuf getBytes(int index, ByteBuf dst, int dstIndex, int length) {
             checkIndex(index, length);
-            rootParent().getBytes(idx(index), dst, dstIndex, length);
+            rootParent.getBytes(idx(index), dst, dstIndex, length);
             return this;
         }
 
         @Override
         public ByteBuf getBytes(int index, byte[] dst, int dstIndex, int length) {
             checkIndex(index, length);
-            rootParent().getBytes(idx(index), dst, dstIndex, length);
+            rootParent.getBytes(idx(index), dst, dstIndex, length);
             return this;
         }
 
         @Override
         public ByteBuf getBytes(int index, ByteBuffer dst) {
             checkIndex(index, dst.remaining());
-            rootParent().getBytes(idx(index), dst);
+            rootParent.getBytes(idx(index), dst);
             return this;
         }
 
         @Override
         protected void _setByte(int index, int value) {
-            ((MiByteBufAdapter) rootParent())._setByte(idx(index), value);
+            ((MiByteBufAdapter) rootParent)._setByte(idx(index), value);
         }
 
         @Override
         protected void _setShort(int index, int value) {
-            ((MiByteBufAdapter) rootParent())._setShort(idx(index), value);
+            ((MiByteBufAdapter) rootParent)._setShort(idx(index), value);
         }
 
         @Override
         protected void _setShortLE(int index, int value) {
-            ((MiByteBufAdapter) rootParent())._setShortLE(idx(index), value);
+            ((MiByteBufAdapter) rootParent)._setShortLE(idx(index), value);
         }
 
         @Override
         protected void _setMedium(int index, int value) {
-            ((MiByteBufAdapter) rootParent())._setMedium(idx(index), value);
+            ((MiByteBufAdapter) rootParent)._setMedium(idx(index), value);
         }
 
         @Override
         protected void _setMediumLE(int index, int value) {
-            ((MiByteBufAdapter) rootParent())._setMediumLE(idx(index), value);
+            ((MiByteBufAdapter) rootParent)._setMediumLE(idx(index), value);
         }
 
         @Override
         protected void _setInt(int index, int value) {
-            ((MiByteBufAdapter) rootParent())._setInt(idx(index), value);
+            ((MiByteBufAdapter) rootParent)._setInt(idx(index), value);
         }
 
         @Override
         protected void _setIntLE(int index, int value) {
-            ((MiByteBufAdapter) rootParent())._setIntLE(idx(index), value);
+            ((MiByteBufAdapter) rootParent)._setIntLE(idx(index), value);
         }
 
         @Override
         protected void _setLong(int index, long value) {
-            ((MiByteBufAdapter) rootParent())._setLong(idx(index), value);
+            ((MiByteBufAdapter) rootParent)._setLong(idx(index), value);
         }
 
         @Override
         protected void _setLongLE(int index, long value) {
-            ((MiByteBufAdapter) rootParent())._setLongLE(idx(index), value);
+            ((MiByteBufAdapter) rootParent)._setLongLE(idx(index), value);
         }
 
         @Override
         public ByteBuf setBytes(int index, byte[] src, int srcIndex, int length) {
             checkIndex(index, length);
             if (tmpNioBuf == null && PlatformDependent.javaVersion() >= 13) {
-                AbstractByteBuf root = rootParent();
+                AbstractByteBuf root = rootParent;
                 ByteBuffer dstBuffer = root.internalNioBuffer(0, root.capacity());
                 PlatformDependent.absolutePut(dstBuffer, idx(index), src, srcIndex, length);
             } else {
@@ -2664,8 +2655,8 @@ final class MiMallocByteBufAllocator {
             if (src instanceof MiByteBuf && PlatformDependent.javaVersion() >= 16) {
                 MiByteBuf srcBuf = (MiByteBuf) src;
                 srcBuf.checkIndex(srcIndex, length);
-                AbstractByteBuf dstRoot = rootParent();
-                AbstractByteBuf srcRoot = srcBuf.rootParent();
+                AbstractByteBuf dstRoot = rootParent;
+                AbstractByteBuf srcRoot = srcBuf.rootParent;
                 ByteBuffer dstBuffer = dstRoot.internalNioBuffer(0, dstRoot.capacity());
                 ByteBuffer srcBuffer = srcRoot.internalNioBuffer(0, srcRoot.capacity());
                 PlatformDependent.absolutePut(dstBuffer, idx(index), srcBuffer, srcBuf.idx(srcIndex), length);
@@ -2724,7 +2715,6 @@ final class MiMallocByteBufAllocator {
         public int setBytes(int index, InputStream in, int length)
                 throws IOException {
             checkIndex(index, length);
-            final AbstractByteBuf rootParent = rootParent();
             if (rootParent.hasArray()) {
                 return rootParent.setBytes(idx(index), in, length);
             }
@@ -2804,21 +2794,21 @@ final class MiMallocByteBufAllocator {
         @Override
         public int forEachByte(int index, int length, ByteProcessor processor) {
             checkIndex(index, length);
-            int ret = rootParent().forEachByte(idx(index), length, processor);
+            int ret = rootParent.forEachByte(idx(index), length, processor);
             return forEachResult(ret);
         }
 
         @Override
         public int forEachByteDesc(int index, int length, ByteProcessor processor) {
             checkIndex(index, length);
-            int ret = rootParent().forEachByteDesc(idx(index), length, processor);
+            int ret = rootParent.forEachByteDesc(idx(index), length, processor);
             return forEachResult(ret);
         }
 
         @Override
         public ByteBuf setZero(int index, int length) {
             checkIndex(index, length);
-            rootParent().setZero(idx(index), length);
+            rootParent.setZero(idx(index), length);
             return this;
         }
 
@@ -2826,7 +2816,7 @@ final class MiMallocByteBufAllocator {
         public ByteBuf writeZero(int length) {
             ensureWritable(length);
             int writerIndex = writerIndex();
-            rootParent().setZero(idx(writerIndex), length);
+            rootParent.setZero(idx(writerIndex), length);
             writerIndex += length;
             writerIndex(writerIndex);
             return this;
@@ -2841,7 +2831,7 @@ final class MiMallocByteBufAllocator {
 
         @Override
         public boolean isContiguous() {
-            return rootParent().isContiguous();
+            return rootParent.isContiguous();
         }
 
         private int idx(int index) {
