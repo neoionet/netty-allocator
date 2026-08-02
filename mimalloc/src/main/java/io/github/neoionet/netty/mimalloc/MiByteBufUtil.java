@@ -28,6 +28,7 @@ import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import static io.netty.util.internal.PlatformDependent.hasUnsafe;
 import static io.netty.util.internal.StringUtil.isSurrogate;
+import io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.MiByteBuf;
 
 /**
  * This is a modified portion of class `io.netty.buffer.ByteBufUtil`
@@ -84,7 +85,7 @@ final class MiByteBufUtil {
                 return safeDirectWriteUtf8(internalDirectBuffer, bufferPosition, seq, start, end);
             }
         }
-        return safeWriteUtf8(buffer, writerIndex, seq, start, end);
+        return safeWriteUtf8((MiByteBuf) buffer, writerIndex, seq, start, end);
     }
 
     // AsciiString Fast-Path implementation - no explicit bound-checks
@@ -247,13 +248,12 @@ final class MiByteBufUtil {
     }
 
     // Safe off-heap Fast-Path implementation
-    private static int safeWriteUtf8(AbstractByteBuf buf, int writerIndex, CharSequence seq, int start, int end) {
+    private static int safeWriteUtf8(MiByteBuf buffer, int writerIndex, CharSequence seq, int start, int end) {
         assert !(seq instanceof AsciiString);
         int oldWriterIndex = writerIndex;
 
         // We can use the _set methods as these not need to do any index checks and reference checks.
         // This is possible as we called ensureWritable(...) before.
-        MiByteBufAdapter buffer = (MiByteBufAdapter) buf;
         for (int i = start; i < end; i++) {
             char c = seq.charAt(i);
             if (c < 0x80) {
@@ -298,15 +298,14 @@ final class MiByteBufUtil {
         if (seq instanceof AsciiString) {
             writeAsciiString(buffer, writerIndex, (AsciiString) seq, 0, len);
         } else {
-            writeAsciiCharSequence(buffer, writerIndex, seq, len);
+            writeAsciiCharSequence((MiByteBuf) buffer, writerIndex, seq, len);
         }
         return len;
     }
 
-    private static int writeAsciiCharSequence(AbstractByteBuf buf, int writerIndex, CharSequence seq, int len) {
+    private static int writeAsciiCharSequence(MiByteBuf buffer, int writerIndex, CharSequence seq, int len) {
         // We can use the _set methods as these not need to do any index checks and reference checks.
         // This is possible as we called ensureWritable(...) before.
-        MiByteBufAdapter buffer = (MiByteBufAdapter) buf;
         for (int i = 0; i < len; i++) {
             buffer._setByte(writerIndex++, AsciiString.c2b(seq.charAt(i)));
         }
