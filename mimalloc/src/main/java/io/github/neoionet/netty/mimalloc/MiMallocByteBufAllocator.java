@@ -157,6 +157,23 @@ final class MiMallocByteBufAllocator {
     // so -1L is safe to use as a sentinel for "no owner".
     private static final long NO_OWNER_THREAD_ID = -1L;
 
+    enum HeapStrategy {
+        AUTO,       // Default: EventLoop threads use thread-local heaps, non-EventLoop threads use shared heaps.
+        TL,         // Force all threads to use thread-local heaps.
+        SHARED      // Force all threads to use shared heaps.
+    }
+    private static final String HEAP_STRATEGY_PROP_KEY = "io.github.neoionet.allocator.mimalloc.heap.strategy";
+    private static final HeapStrategy HEAP_STRATEGY = getHeapStrategy();
+
+    private static HeapStrategy getHeapStrategy() {
+        String value = SystemPropertyUtil.get(HEAP_STRATEGY_PROP_KEY, HeapStrategy.AUTO.name()).toUpperCase();
+        try {
+            return HeapStrategy.valueOf(value);
+        } catch (IllegalArgumentException e) {
+            return HeapStrategy.AUTO;
+        }
+    }
+
     // Default segment size: 4 MiB.
     // Allowed segment size: {4, 8, 16, 32} MiB.
     private static int calculateSegmentShift() {
@@ -186,6 +203,8 @@ final class MiMallocByteBufAllocator {
         if (logger.isDebugEnabled()) {
             logger.debug("-D" + SEGMENT_SIZE_PROP_KEY + ": {}", SEGMENT_SIZE / MiB);
             logger.debug("-D" + PAGE_SEARCH_STRATEGY_PROP_KEY + ": {}", PAGE_SEARCH_STRATEGY.name().toLowerCase());
+            logger.debug("-D" + MAX_SHARED_HEAP_WRAPS_LENGTH + ": {}", MAX_SHARED_HEAP_WRAPS_LENGTH);
+            logger.debug("-D" + HEAP_STRATEGY_PROP_KEY + ": {}", HEAP_STRATEGY.name().toLowerCase());
         }
     }
 
@@ -2125,9 +2144,21 @@ final class MiMallocByteBufAllocator {
         return allocate(size, maxCapacity, null, false);
     }
 
+    private boolean isThreadLocalAllocation() {
+        switch (HEAP_STRATEGY) {
+            case TL:
+                return true;
+            case SHARED:
+                return false;
+            case AUTO:
+            default:
+                return FastThreadLocalThread.currentThreadWillCleanupFastThreadLocals();
+        }
+    }
+
     private MiByteBuf allocate(int size, int maxCapacity, MiByteBuf byteBuf, boolean isReAlloc) {
         int goodAllocSize = 0;
-        if (FastThreadLocalThread.currentThreadWillCleanupFastThreadLocals()) {
+        if (isThreadLocalAllocation()) {
             return allocate(size, maxCapacity, byteBuf, isReAlloc, THREAD_LOCAL_HEAP.get());
         } else if (size <= MEDIUM_BLOCK_SIZE_MAX ||
                 (goodAllocSize = getGoodOsAllocSize(size)) <= LARGE_BLOCK_SIZE_MAX) { // If not huge.
