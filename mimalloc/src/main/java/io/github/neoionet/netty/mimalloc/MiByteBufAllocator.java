@@ -7,8 +7,15 @@ import io.netty.buffer.ByteBufAllocatorMetric;
 import io.netty.buffer.ByteBufAllocatorMetricProvider;
 import io.netty.buffer.UnpooledDirectByteBuf;
 import io.netty.buffer.UnpooledHeapByteBuf;
+import io.netty.util.internal.ObjectUtil;
 import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.UnstableApi;
+import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.HEAP_STRATEGY_PROP_VALUE;
+import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.MAX_SHARED_HEAP_WRAPS_LENGTH_PROP_VALUE;
+import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.PAGE_SEARCH_STRATEGY_PROP_VALUE;
+import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.SEGMENT_SIZE_PROP_VALUE_IN_BYTES;
+import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.calculateMaxHeapWrapsLength;
+import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.calculateSegmentSizeInBytes;
 
 /**
  * A Free-List {@link ByteBufAllocator} derived from `mimalloc`:
@@ -41,8 +48,15 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
      */
     public MiByteBufAllocator(boolean preferDirect) {
         super(preferDirect);
-        direct = new MiMallocByteBufAllocator(new DirectChunkAllocator(this));
-        heap = new MiMallocByteBufAllocator(new HeapChunkAllocator(this));
+        final Builder builder = builder();
+        direct = new MiMallocByteBufAllocator(new DirectChunkAllocator(this), builder);
+        heap = new MiMallocByteBufAllocator(new HeapChunkAllocator(this), builder);
+    }
+
+    private MiByteBufAllocator(Builder builder) {
+        super(builder.preferDirect);
+        direct = new MiMallocByteBufAllocator(new DirectChunkAllocator(this), builder);
+        heap = new MiMallocByteBufAllocator(new HeapChunkAllocator(this), builder);
     }
 
     @Override
@@ -75,7 +89,7 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
         return this;
     }
 
-    private static final class HeapChunkAllocator implements MiMallocByteBufAllocator.ChunkAllocator {
+    static final class HeapChunkAllocator implements MiMallocByteBufAllocator.ChunkAllocator {
         private final ByteBufAllocator allocator;
 
         private HeapChunkAllocator(ByteBufAllocator allocator) {
@@ -90,7 +104,7 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
         }
     }
 
-    private static final class DirectChunkAllocator implements MiMallocByteBufAllocator.ChunkAllocator {
+    static final class DirectChunkAllocator implements MiMallocByteBufAllocator.ChunkAllocator {
         private final ByteBufAllocator allocator;
 
         private DirectChunkAllocator(ByteBufAllocator allocator) {
@@ -101,5 +115,67 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
         public UnpooledDirectByteBuf allocate(int initialCapacity, int maxCapacity) {
             return MiByteBufUtil.newDirectByteBuf(allocator, initialCapacity, maxCapacity);
         }
+    }
+
+    public static final class Builder {
+        private boolean preferDirect = !PlatformDependent.isExplicitNoPreferDirect();
+        int segmentSizeInBytes = SEGMENT_SIZE_PROP_VALUE_IN_BYTES;
+        PageSearchStrategy pageSearchStrategy = PAGE_SEARCH_STRATEGY_PROP_VALUE;
+        int maxSharedHeapWrapsLength = MAX_SHARED_HEAP_WRAPS_LENGTH_PROP_VALUE;
+        HeapStrategy heapStrategy = HEAP_STRATEGY_PROP_VALUE;
+
+        private Builder() {}
+
+        public Builder preferDirect(boolean preferDirect) {
+            this.preferDirect = preferDirect;
+            return this;
+        }
+
+        public Builder segmentSizeInMiB(int segmentSizeInMiB) {
+            this.segmentSizeInBytes = calculateSegmentSizeInBytes(segmentSizeInMiB);
+            return this;
+        }
+
+        public Builder pageSearchStrategy(PageSearchStrategy pageSearchStrategy) {
+            ObjectUtil.checkNotNull(pageSearchStrategy, "pageSearchStrategy");
+            this.pageSearchStrategy = pageSearchStrategy;
+            return this;
+        }
+
+        public Builder maxSharedHeapWrapsLength(int maxSharedHeapWrapsLength) {
+            this.maxSharedHeapWrapsLength = calculateMaxHeapWrapsLength(maxSharedHeapWrapsLength);
+            return this;
+        }
+
+        public Builder heapStrategy(HeapStrategy heapStrategy) {
+            ObjectUtil.checkNotNull(heapStrategy, "heapStrategy");
+            this.heapStrategy = heapStrategy;
+            return this;
+        }
+
+        /**
+         * @return A {@code MiByteBufAllocator} instance.
+         */
+        public MiByteBufAllocator build() {
+            return new MiByteBufAllocator(this);
+        }
+    }
+
+    public enum PageSearchStrategy {
+        BEST, // best-fit
+        FIRST // first-fit
+    }
+
+    public enum HeapStrategy {
+        AUTO,       // Default: EventLoop threads use thread-local heaps, non-EventLoop threads use shared heaps.
+        TL,         // Force all threads to use thread-local heaps.
+        SHARED      // Force all threads to use shared heaps.
+    }
+
+    /**
+     * @return A default {@code Builder} instance.
+     */
+    public static Builder builder() {
+        return new Builder();
     }
 }
