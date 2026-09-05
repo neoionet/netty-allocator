@@ -43,17 +43,17 @@ Add the following dependencies to your `pom.xml`:
         <dependency>
             <groupId>io.github.neoionet</groupId>
             <artifactId>mimalloc</artifactId>
-            <version>1.1.7.Final</version>
+            <version>1.1.8.Final</version>
         </dependency>
         <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty-common</artifactId>
-            <version>4.2.16.Final</version>
+            <version>4.2.17.Final</version>
         </dependency>
         <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty-buffer</artifactId>
-            <version>4.2.16.Final</version>
+            <version>4.2.17.Final</version>
         </dependency>
     </dependencies>
 ```
