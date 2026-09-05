@@ -24,6 +24,7 @@ import java.nio.channels.ScatteringByteChannel;
 import java.nio.charset.Charset;
 import java.util.ArrayDeque;
 import java.util.Arrays;
+import java.util.Locale;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.TimeUnit;
@@ -176,12 +177,13 @@ final class MiMallocByteBufAllocator {
                     segmentSizeInBytesParam / MiB, this);
             logger.debug("allocType: " + allocType +
                     ", effective pageSearchStrategy: {}, instance: {}",
-                    pageSearchStrategyParam.name().toLowerCase(), this);
+                    pageSearchStrategyParam.name().toLowerCase(Locale.ROOT), this);
             logger.debug("allocType: " + allocType +
                     ", effective maxSharedHeapWrapsLength: {}, instance: {}",
                     maxSharedHeapWrapsLengthParam, this);
             logger.debug("allocType: " + allocType +
-                    ", effective heapStrategy: {}, instance: {}",  heapStrategyParam.name().toLowerCase(), this);
+                    ", effective heapStrategy: {}, instance: {}",
+                    heapStrategyParam.name().toLowerCase(Locale.ROOT), this);
         }
     }
 

@@ -12,6 +12,9 @@ import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.UnstableApi;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
+
+import java.util.Locale;
+
 import static io.github.neoionet.netty.mimalloc.MiMallocOption.AllocType;
 import static io.github.neoionet.netty.mimalloc.MiByteBufUtil.MiB;
 import static io.github.neoionet.netty.mimalloc.MiMallocOption.calculateMaxHeapWrapsLength;
@@ -32,7 +35,6 @@ import static io.github.neoionet.netty.mimalloc.MiMallocOption.getDefaultSegment
  * <strong>Note:</strong> This allocator is <strong>experimental</strong>.
  * It is recommended to roll out usage slowly, and to carefully monitor application performance in the process.
  * <p>
- *
  * See the {@link MiMallocByteBufAllocator} class documentation for implementation details.
  */
 @UnstableApi
@@ -140,11 +142,11 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
                 logger.debug("Default segmentSizeInBytes in MiB: {}, instance: {}",
                         segmentSizeInBytes / MiB, this);
                 logger.debug("Default pageSearchStrategy: {}, instance: {}",
-                        pageSearchStrategy.name().toLowerCase(), this);
+                        pageSearchStrategy.name().toLowerCase(Locale.ROOT), this);
                 logger.debug("Default maxSharedHeapWrapsLength: {}, instance: {}",
                         maxSharedHeapWrapsLength, this);
                 logger.debug("Default heapStrategy: {}, instance: {}",
-                        heapStrategy.name().toLowerCase(), this);
+                        heapStrategy.name().toLowerCase(Locale.ROOT), this);
             }
         }
 

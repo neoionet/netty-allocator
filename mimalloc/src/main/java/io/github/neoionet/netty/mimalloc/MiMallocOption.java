@@ -7,6 +7,9 @@ import io.netty.util.internal.SystemPropertyUtil;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
+import java.util.Locale;
+import java.util.function.Supplier;
+
 import static io.github.neoionet.netty.mimalloc.MiByteBufUtil.MiB;
 import static io.github.neoionet.netty.mimalloc.MiMallocOption.PageSearchStrategy.BEST;
 
@@ -26,21 +29,6 @@ public final class MiMallocOption {
 
     private static final String SEGMENT_SIZE_PROP_KEY = "io.github.neoionet.allocator.mimalloc.segment.mib";
 
-    static HeapStrategy getDefaultHeapStrategy() {
-        String value = SystemPropertyUtil.get(HEAP_STRATEGY_PROP_KEY, HeapStrategy.AUTO.name()).toUpperCase();
-        return HeapStrategy.valueOf(value);
-    }
-
-    static PageSearchStrategy getDefaultPageSearchStrategy() {
-        String value = SystemPropertyUtil.get(PAGE_SEARCH_STRATEGY_PROP_KEY, BEST.name()).toUpperCase();
-        return PageSearchStrategy.valueOf(value);
-    }
-
-    static int getDefaultSegmentSizeInBytes() {
-        // Default segment size: 4 MiB.
-        return calculateSegmentSizeInBytes(SystemPropertyUtil.getInt(SEGMENT_SIZE_PROP_KEY, 4));
-    }
-
     // Allowed segment size: {4, 8, 16, 32} MiB.
     static int calculateSegmentSizeInBytes(int segmentSizeInMiB) {
         ObjectUtil.checkPositive(segmentSizeInMiB, "segmentSizeInMiB");
@@ -59,12 +47,43 @@ public final class MiMallocOption {
         return MathUtil.safeFindNextPositivePowerOfTwo(maxSharedHeapWrapsLength);
     }
 
-    // Use `NettyRuntime.availableProcessors() * 4` as the default max shared heaps length,
-    // which exceed the common thread pool size (cores * 2), to leave reasonable capacity to expand.
+    static HeapStrategy getDefaultHeapStrategy() {
+        String value = SystemPropertyUtil.get(HEAP_STRATEGY_PROP_KEY, HeapStrategy.AUTO.name())
+                .toUpperCase(Locale.ROOT);
+        return withPropertyContext(HEAP_STRATEGY_PROP_KEY, value, () -> HeapStrategy.valueOf(value));
+    }
+
+    static PageSearchStrategy getDefaultPageSearchStrategy() {
+        String value = SystemPropertyUtil.get(PAGE_SEARCH_STRATEGY_PROP_KEY, BEST.name())
+                .toUpperCase(Locale.ROOT);
+        return withPropertyContext(PAGE_SEARCH_STRATEGY_PROP_KEY, value, () -> PageSearchStrategy.valueOf(value));
+    }
+
+    static int getDefaultSegmentSizeInBytes() {
+        // Default segment size: 4 MiB.
+        int value = SystemPropertyUtil.getInt(SEGMENT_SIZE_PROP_KEY, 4);
+        return withPropertyContext(SEGMENT_SIZE_PROP_KEY, value, () -> calculateSegmentSizeInBytes(value));
+    }
+
     static int getDefaultMaxSharedHeapWrapsLength() {
-        return calculateMaxHeapWrapsLength(
-                SystemPropertyUtil.getInt(MAX_SHARED_HEAP_WRAPS_LENGTH_PROP_KEY,
-                        NettyRuntime.availableProcessors() * 4));
+        // Use `NettyRuntime.availableProcessors() * 4` as the default max shared heaps length,
+        // which exceed the common thread pool size (cores * 2), to leave reasonable capacity to expand.
+        int maxLength = NettyRuntime.availableProcessors() * 4;
+        int value = SystemPropertyUtil.getInt(MAX_SHARED_HEAP_WRAPS_LENGTH_PROP_KEY, maxLength);
+        return withPropertyContext(MAX_SHARED_HEAP_WRAPS_LENGTH_PROP_KEY, value,
+                () -> calculateMaxHeapWrapsLength(value));
+    }
+
+    /**
+     * Runs {@code supplier}, wrapping any {@link IllegalArgumentException} it throws with the
+     * offending system property key/value, so the failure is traceable back to a specific -D flag.
+     */
+    private static <T> T withPropertyContext(String propKey, Object rawValue, Supplier<T> supplier) {
+        try {
+            return supplier.get();
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Invalid value for -D" + propKey + ": " + rawValue, e);
+        }
     }
 
     public enum PageSearchStrategy {
