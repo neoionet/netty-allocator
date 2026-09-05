@@ -64,7 +64,7 @@ If you want to use the mimalloc allocator within your server or client transport
        <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty-transport</artifactId>
-            <version>4.2.16.Final</version>
+            <version>4.2.17.Final</version>
         </dependency>
     </dependencies>
 ```
