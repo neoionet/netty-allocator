@@ -7,6 +7,7 @@ import io.netty.util.internal.SystemPropertyUtil;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
+import static io.github.neoionet.netty.mimalloc.MiByteBufUtil.MiB;
 import static io.github.neoionet.netty.mimalloc.MiMallocOption.PageSearchStrategy.BEST;
 
 public final class MiMallocOption {
@@ -50,7 +51,7 @@ public final class MiMallocOption {
         if (segmentMibNextPower2 > 32) {
             segmentMibNextPower2 = 32;
         }
-        return 1 << (Integer.numberOfTrailingZeros(segmentMibNextPower2) + 20);
+        return 1 << (Integer.numberOfTrailingZeros(segmentMibNextPower2) + Integer.numberOfTrailingZeros(MiB));
     }
 
     static int calculateMaxHeapWrapsLength(int maxSharedHeapWrapsLength) {
