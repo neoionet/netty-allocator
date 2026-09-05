@@ -10,12 +10,18 @@ import io.netty.buffer.UnpooledHeapByteBuf;
 import io.netty.util.internal.ObjectUtil;
 import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.UnstableApi;
-import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.HEAP_STRATEGY_PROP_VALUE;
-import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.MAX_SHARED_HEAP_WRAPS_LENGTH_PROP_VALUE;
-import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.PAGE_SEARCH_STRATEGY_PROP_VALUE;
-import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.SEGMENT_SIZE_PROP_VALUE_IN_BYTES;
-import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.calculateMaxHeapWrapsLength;
-import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.calculateSegmentSizeInBytes;
+import io.netty.util.internal.logging.InternalLogger;
+import io.netty.util.internal.logging.InternalLoggerFactory;
+import static io.github.neoionet.netty.mimalloc.MiMallocOption.AllocType;
+import static io.github.neoionet.netty.mimalloc.MiByteBufUtil.MiB;
+import static io.github.neoionet.netty.mimalloc.MiMallocOption.calculateMaxHeapWrapsLength;
+import static io.github.neoionet.netty.mimalloc.MiMallocOption.calculateSegmentSizeInBytes;
+import static io.github.neoionet.netty.mimalloc.MiMallocOption.PageSearchStrategy;
+import static io.github.neoionet.netty.mimalloc.MiMallocOption.HeapStrategy;
+import static io.github.neoionet.netty.mimalloc.MiMallocOption.getDefaultHeapStrategy;
+import static io.github.neoionet.netty.mimalloc.MiMallocOption.getDefaultMaxSharedHeapWrapsLength;
+import static io.github.neoionet.netty.mimalloc.MiMallocOption.getDefaultPageSearchStrategy;
+import static io.github.neoionet.netty.mimalloc.MiMallocOption.getDefaultSegmentSizeInBytes;
 
 /**
  * A Free-List {@link ByteBufAllocator} derived from `mimalloc`:
@@ -33,6 +39,8 @@ import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.calcula
 public final class MiByteBufAllocator extends AbstractByteBufAllocator
         implements ByteBufAllocatorMetricProvider, ByteBufAllocatorMetric {
 
+    private static final InternalLogger logger = InternalLoggerFactory.getInstance(MiByteBufAllocator.class);
+
     private final MiMallocByteBufAllocator direct;
     private final MiMallocByteBufAllocator heap;
 
@@ -40,7 +48,7 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
      * Creates a new instance of {@code MiByteBufAllocator} with the default settings.
      */
     public MiByteBufAllocator() {
-        this(!PlatformDependent.isExplicitNoPreferDirect());
+        this(defaultPreferDirect());
     }
 
     /**
@@ -49,14 +57,14 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
     public MiByteBufAllocator(boolean preferDirect) {
         super(preferDirect);
         final Builder builder = builder();
-        direct = new MiMallocByteBufAllocator(new DirectChunkAllocator(this), builder);
-        heap = new MiMallocByteBufAllocator(new HeapChunkAllocator(this), builder);
+        direct = new MiMallocByteBufAllocator(new DirectChunkAllocator(this), builder, AllocType.DIRECT);
+        heap = new MiMallocByteBufAllocator(new HeapChunkAllocator(this), builder, AllocType.HEAP);
     }
 
-    private MiByteBufAllocator(Builder builder) {
-        super(builder.preferDirect);
-        direct = new MiMallocByteBufAllocator(new DirectChunkAllocator(this), builder);
-        heap = new MiMallocByteBufAllocator(new HeapChunkAllocator(this), builder);
+    private MiByteBufAllocator(boolean preferDirect, Builder builder) {
+        super(preferDirect);
+        direct = new MiMallocByteBufAllocator(new DirectChunkAllocator(this), builder, AllocType.DIRECT);
+        heap = new MiMallocByteBufAllocator(new HeapChunkAllocator(this), builder, AllocType.HEAP);
     }
 
     @Override
@@ -89,7 +97,11 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
         return this;
     }
 
-    static final class HeapChunkAllocator implements MiMallocByteBufAllocator.ChunkAllocator {
+    private static boolean defaultPreferDirect() {
+        return !PlatformDependent.isExplicitNoPreferDirect();
+    }
+
+    private static final class HeapChunkAllocator implements MiMallocByteBufAllocator.ChunkAllocator {
         private final ByteBufAllocator allocator;
 
         private HeapChunkAllocator(ByteBufAllocator allocator) {
@@ -104,7 +116,7 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
         }
     }
 
-    static final class DirectChunkAllocator implements MiMallocByteBufAllocator.ChunkAllocator {
+    private static final class DirectChunkAllocator implements MiMallocByteBufAllocator.ChunkAllocator {
         private final ByteBufAllocator allocator;
 
         private DirectChunkAllocator(ByteBufAllocator allocator) {
@@ -118,17 +130,22 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
     }
 
     public static final class Builder {
-        private boolean preferDirect = !PlatformDependent.isExplicitNoPreferDirect();
-        int segmentSizeInBytes = SEGMENT_SIZE_PROP_VALUE_IN_BYTES;
-        PageSearchStrategy pageSearchStrategy = PAGE_SEARCH_STRATEGY_PROP_VALUE;
-        int maxSharedHeapWrapsLength = MAX_SHARED_HEAP_WRAPS_LENGTH_PROP_VALUE;
-        HeapStrategy heapStrategy = HEAP_STRATEGY_PROP_VALUE;
+        int segmentSizeInBytes = getDefaultSegmentSizeInBytes();
+        PageSearchStrategy pageSearchStrategy = getDefaultPageSearchStrategy();
+        int maxSharedHeapWrapsLength = getDefaultMaxSharedHeapWrapsLength();
+        HeapStrategy heapStrategy = getDefaultHeapStrategy();
 
-        private Builder() {}
-
-        public Builder preferDirect(boolean preferDirect) {
-            this.preferDirect = preferDirect;
-            return this;
+        private Builder() {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Default segmentSizeInBytes in MiB: {}, instance: {}",
+                        segmentSizeInBytes / MiB, this);
+                logger.debug("Default pageSearchStrategy: {}, instance: {}",
+                        pageSearchStrategy.name().toLowerCase(), this);
+                logger.debug("Default maxSharedHeapWrapsLength: {}, instance: {}",
+                        maxSharedHeapWrapsLength, this);
+                logger.debug("Default heapStrategy: {}, instance: {}",
+                        heapStrategy.name().toLowerCase(), this);
+            }
         }
 
         public Builder segmentSizeInMiB(int segmentSizeInMiB) {
@@ -154,22 +171,18 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
         }
 
         /**
-         * @return A {@code MiByteBufAllocator} instance.
+         * @return A {@code MiByteBufAllocator} instance, with specified {@code preferDirect}
+         */
+        public MiByteBufAllocator build(boolean preferDirect) {
+            return new MiByteBufAllocator(preferDirect, this);
+        }
+
+        /**
+         * @return A {@code MiByteBufAllocator} instance, with default {@code preferDirect}
          */
         public MiByteBufAllocator build() {
-            return new MiByteBufAllocator(this);
+            return new MiByteBufAllocator(defaultPreferDirect(), this);
         }
-    }
-
-    public enum PageSearchStrategy {
-        BEST, // best-fit
-        FIRST // first-fit
-    }
-
-    public enum HeapStrategy {
-        AUTO,       // Default: EventLoop threads use thread-local heaps, non-EventLoop threads use shared heaps.
-        TL,         // Force all threads to use thread-local heaps.
-        SHARED      // Force all threads to use shared heaps.
     }
 
     /**

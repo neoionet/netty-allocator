@@ -46,6 +46,9 @@ final class MiByteBufUtil {
     private static final byte WRITE_UTF_UNKNOWN = (byte) '?';
     private static final int WRITE_CHUNK_SIZE = 8192;
 
+    static final int KiB = 1024;
+    static final int MiB = KiB * KiB;
+
     static byte[] threadLocalTempArray(int minLength) {
         // Only make use of ThreadLocal if we use a FastThreadLocalThread to make the implementation
         // Virtual Thread friendly.

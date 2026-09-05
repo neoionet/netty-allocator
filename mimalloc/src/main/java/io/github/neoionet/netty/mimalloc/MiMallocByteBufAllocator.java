@@ -7,15 +7,11 @@ import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.util.ByteProcessor;
 import io.netty.util.CharsetUtil;
-import io.netty.util.NettyRuntime;
 import io.netty.util.concurrent.FastThreadLocal;
 import io.netty.util.concurrent.FastThreadLocalThread;
-import io.netty.util.internal.MathUtil;
 import io.netty.util.internal.PlatformDependent;
-import io.netty.util.internal.SystemPropertyUtil;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -42,11 +38,14 @@ import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.Delayed
 import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.DelayedFlag.NEVER_DELAYED_FREE;
 import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.DelayedFlag.NO_DELAYED_FREE;
 import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.DelayedFlag.USE_DELAYED_FREE;
-import static io.github.neoionet.netty.mimalloc.MiByteBufAllocator.PageSearchStrategy.BEST;
 import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.SegmentKind.SEGMENT_HUGE;
 import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.SegmentKind.SEGMENT_NORMAL;
-import static io.github.neoionet.netty.mimalloc.MiByteBufAllocator.PageSearchStrategy;
-import static io.github.neoionet.netty.mimalloc.MiByteBufAllocator.HeapStrategy;
+import static io.github.neoionet.netty.mimalloc.MiByteBufUtil.KiB;
+import static io.github.neoionet.netty.mimalloc.MiByteBufUtil.MiB;
+import static io.github.neoionet.netty.mimalloc.MiMallocOption.AllocType;
+import static io.github.neoionet.netty.mimalloc.MiMallocOption.PageSearchStrategy.BEST;
+import static io.github.neoionet.netty.mimalloc.MiMallocOption.PageSearchStrategy;
+import static io.github.neoionet.netty.mimalloc.MiMallocOption.HeapStrategy;
 
 final class MiMallocByteBufAllocator {
 
@@ -57,10 +56,6 @@ final class MiMallocByteBufAllocator {
 
     // 64 KiB
     private static final int SEGMENT_SLICE_SHIFT = 16;
-    private static final String SEGMENT_SIZE_PROP_KEY = "io.github.neoionet.allocator.mimalloc.segment.mib";
-    static final int SEGMENT_SIZE_PROP_VALUE_IN_BYTES =
-            calculateSegmentSizeInBytes(SystemPropertyUtil.getInt(SEGMENT_SIZE_PROP_KEY, 4));
-
     // 64 KiB
     private static final int SMALL_PAGE_SHIFT = SEGMENT_SLICE_SHIFT;
     // 512 KiB
@@ -94,10 +89,6 @@ final class MiMallocByteBufAllocator {
 
     private static final int SPAN_QUEUE_MAX_INDEX = 31;
 
-    private static final String PAGE_SEARCH_STRATEGY_PROP_KEY =
-            "io.github.neoionet.allocator.mimalloc.page.search.strategy";
-    static final PageSearchStrategy PAGE_SEARCH_STRATEGY_PROP_VALUE = getPageSearchStrategy();
-
     private static final int MAX_PAGE_CANDIDATE_SEARCH = 5;
     private static final int MAX_FULL_PAGE_MOVE = 10;
 
@@ -128,9 +119,6 @@ final class MiMallocByteBufAllocator {
 
     private static final Object RECLAIMED_SEGMENT_FLAG = new Object();
 
-    private static final int KiB = 1024;
-    private static final int MiB = KiB * KiB;
-
     private static final byte DEFAULT_PAGE_RETIRE_CYCLES_HIGH = 16;
     private static final byte DEFAULT_PAGE_RETIRE_CYCLES_LOW = 4;
     private static final byte DEFAULT_PAGE_RETIRE_EXPIRE_INIT = 7;
@@ -144,15 +132,6 @@ final class MiMallocByteBufAllocator {
 
     private final SharedHeapWrap[] sharedHeapWraps;
 
-    private static final String MAX_SHARED_HEAP_WRAPS_LENGTH_PROP_KEY =
-            "io.github.neoionet.allocator.mimalloc.maxSharedHeaps";
-
-    // Use `NettyRuntime.availableProcessors() * 4` as the default max shared heaps length,
-    // which exceed the common thread pool size (cores * 2), to leave reasonable capacity to expand.
-    static final int MAX_SHARED_HEAP_WRAPS_LENGTH_PROP_VALUE =
-            calculateMaxHeapWrapsLength(SystemPropertyUtil.getInt(MAX_SHARED_HEAP_WRAPS_LENGTH_PROP_KEY,
-                    NettyRuntime.availableProcessors() * 4));
-
     // The number references the default value of `glibc.pthread.mutex_spin_count`, see:
     // https://sourceware.org/glibc/manual/latest/html_mono/libc.html#index-glibc_002epthread_002emutex_005fspin_005fcount
     private static final int MAX_SHARED_HEAP_LOCK_SPIN_COUNT = 100;
@@ -163,57 +142,7 @@ final class MiMallocByteBufAllocator {
     // so -1L is safe to use as a sentinel for "no owner".
     private static final long NO_OWNER_THREAD_ID = -1L;
 
-    private static final String HEAP_STRATEGY_PROP_KEY = "io.github.neoionet.allocator.mimalloc.heap.strategy";
-    static final HeapStrategy HEAP_STRATEGY_PROP_VALUE = getHeapStrategy();
-
-    private static HeapStrategy getHeapStrategy() {
-        String value = SystemPropertyUtil.get(HEAP_STRATEGY_PROP_KEY, HeapStrategy.AUTO.name()).toUpperCase();
-        try {
-            return HeapStrategy.valueOf(value);
-        } catch (IllegalArgumentException e) {
-            return HeapStrategy.AUTO;
-        }
-    }
-
-    static int calculateMaxHeapWrapsLength(int lengthConf) {
-        return MathUtil.safeFindNextPositivePowerOfTwo(lengthConf);
-    }
-
-    // Default segment size: 4 MiB.
-    // Allowed segment size: {4, 8, 16, 32} MiB.
-    static int calculateSegmentSizeInBytes(int segmentMibConf) {
-        int segmentMibNextPower2 = MathUtil.safeFindNextPositivePowerOfTwo(segmentMibConf);
-        if (segmentMibNextPower2 < 4) {
-            segmentMibNextPower2 = 4;
-        }
-        if (segmentMibNextPower2 > 32) {
-            segmentMibNextPower2 = 32;
-        }
-        return 1 << (SEGMENT_SLICE_SHIFT + Integer.numberOfTrailingZeros(segmentMibNextPower2) + 4);
-    }
-
-    // Default page search strategy: best-fit.
-    // Allowed page search strategy: {best-fit, first-fit}.
-    private static PageSearchStrategy getPageSearchStrategy() {
-        String value = SystemPropertyUtil.get(PAGE_SEARCH_STRATEGY_PROP_KEY, BEST.name()).toUpperCase();
-        try {
-            return PageSearchStrategy.valueOf(value);
-        } catch (IllegalArgumentException e) {
-            return BEST;
-        }
-    }
-
-    static {
-        if (logger.isDebugEnabled()) {
-            logger.debug("-D" + SEGMENT_SIZE_PROP_KEY + ": {}", SEGMENT_SIZE_PROP_VALUE_IN_BYTES / MiB);
-            logger.debug("-D" + PAGE_SEARCH_STRATEGY_PROP_KEY + ": {}",
-                    PAGE_SEARCH_STRATEGY_PROP_VALUE.name().toLowerCase());
-            logger.debug("-D" + MAX_SHARED_HEAP_WRAPS_LENGTH_PROP_KEY + ": {}", MAX_SHARED_HEAP_WRAPS_LENGTH_PROP_VALUE);
-            logger.debug("-D" + HEAP_STRATEGY_PROP_KEY + ": {}", HEAP_STRATEGY_PROP_VALUE.name().toLowerCase());
-        }
-    }
-
-    MiMallocByteBufAllocator(ChunkAllocator chunkAllocator, MiByteBufAllocator.Builder builder) {
+    MiMallocByteBufAllocator(ChunkAllocator chunkAllocator, MiByteBufAllocator.Builder builder, AllocType allocType) {
         this.chunkAllocator = chunkAllocator;
         this.segmentSizeInBytesParam = builder.segmentSizeInBytes;
         this.sliceCountParam = segmentSizeInBytesParam / SEGMENT_SLICE_SIZE;
@@ -222,17 +151,6 @@ final class MiMallocByteBufAllocator {
         this.pageSearchStrategyParam = builder.pageSearchStrategy;
         this.maxSharedHeapWrapsLengthParam = builder.maxSharedHeapWrapsLength;
         this.heapStrategyParam = builder.heapStrategy;
-        if (logger.isDebugEnabled()) {
-            String allocType = chunkAllocator instanceof MiByteBufAllocator.DirectChunkAllocator ? "direct" : "heap";
-            logger.debug("allocType: " + allocType +
-                    ", segmentSizeInBytesParam to MiB: {}", segmentSizeInBytesParam / MiB);
-            logger.debug("allocType: " + allocType +
-                    ", pageSearchStrategyParam: {}", pageSearchStrategyParam.name().toLowerCase());
-            logger.debug("allocType: " + allocType +
-                    ", maxSharedHeapWrapsLengthParam: {}", maxSharedHeapWrapsLengthParam);
-            logger.debug("allocType: " + allocType +
-                    ", heapStrategyParam: {}", heapStrategyParam.name().toLowerCase());
-        }
         this.abandonedSegmentDeque = new ConcurrentLinkedDeque<>();
         this.THREAD_LOCAL_HEAP = new FastThreadLocal<LocalHeap>() {
             @Override
@@ -253,6 +171,18 @@ final class MiMallocByteBufAllocator {
         // Init the first heap.
         sharedHeapWraps[0].heap = new LocalHeap(this, sharedHeapWraps[0].lock);
         this.heapsScanLength = new AtomicInteger(1);
+        if (logger.isDebugEnabled()) {
+            logger.debug("allocType: " + allocType + ", effective segmentSizeInBytes in MiB: {}, instance: {}",
+                    segmentSizeInBytesParam / MiB, this);
+            logger.debug("allocType: " + allocType +
+                    ", effective pageSearchStrategy: {}, instance: {}",
+                    pageSearchStrategyParam.name().toLowerCase(), this);
+            logger.debug("allocType: " + allocType +
+                    ", effective maxSharedHeapWrapsLength: {}, instance: {}",
+                    maxSharedHeapWrapsLengthParam, this);
+            logger.debug("allocType: " + allocType +
+                    ", effective heapStrategy: {}, instance: {}",  heapStrategyParam.name().toLowerCase(), this);
+        }
     }
 
     @SuppressWarnings("FinalizeDeclaration")
@@ -517,11 +447,11 @@ final class MiMallocByteBufAllocator {
         // Collect abandoned segments
         private void abandonedCollect(boolean isCollectAll) {
             Segment segment;
-            long abandonedSegmentCount = this.allocator.abandonedSegmentCount.get();
+            long abandonedSegmentCount = allocator.abandonedSegmentCount.get();
             long maxTries = isCollectAll ? abandonedSegmentCount :
                     Math.min(1024, abandonedSegmentCount); // Limit latency
-            while (maxTries-- > 0 && (segment = this.allocator.abandonedSegmentDeque.poll()) != null) {
-                this.allocator.abandonedSegmentCount.decrementAndGet();
+            while (maxTries-- > 0 && (segment = allocator.abandonedSegmentDeque.poll()) != null) {
+                allocator.abandonedSegmentCount.decrementAndGet();
                 segmentCheckFree(segment, 0, 0); // try to free up pages (due to concurrent frees)
                 if (segment.usedPages == 0) {
                     // Free the segment (by forced reclaim) to make it available to other threads.
@@ -660,12 +590,12 @@ final class MiMallocByteBufAllocator {
 
         private Page createHugePage(int size) {
             // Allocate the segment.
-            AbstractByteBuf buf = this.allocator.newChunk(size);
+            AbstractByteBuf buf = allocator.newChunk(size);
             if (buf == null) {
                 return null; // Signal OOM
             }
             // huge segment only needs 1 slice.
-            Segment segment = new Segment(this.allocator, size, 1, SEGMENT_HUGE, buf, this);
+            Segment segment = new Segment(allocator, size, 1, SEGMENT_HUGE, buf, this);
             // Allocate a huge page which spans the entire segment.
             Page page = segmentHugeSpanAllocate(segment, size);
             // A fresh page was found, initialize it.
@@ -680,7 +610,7 @@ final class MiMallocByteBufAllocator {
         // Huge pages contain just one block, and the segment contains just that page (as `SEGMENT_HUGE`).
         private Page largeOrHugePageAlloc(int size) {
             int blockSize = getGoodOsAllocSize(size);
-            boolean isHuge = blockSize > this.allocator.largeBlockSizeMaxParam;
+            boolean isHuge = blockSize > allocator.largeBlockSizeMaxParam;
             PageQueue pq = isHuge ? null : pageQueue(blockSize);
             return pageFreshAlloc(pq, blockSize);
         }
@@ -707,13 +637,13 @@ final class MiMallocByteBufAllocator {
             int fullPageMoveCount = 0;
             Page pageCandidate = null;
             Page page = pq.firstPage;
-            PageSearchStrategy pageSearchStrategyParam = this.allocator.pageSearchStrategyParam;
+            PageSearchStrategy pageSearchStrategy = allocator.pageSearchStrategyParam;
             // Search through the pages in "next fit" order.
             while (page != null) {
                 Page next = page.nextPage;
                 candidateCount++;
                 page.pageFreeCollect(false);
-                if (pageSearchStrategyParam == BEST) {
+                if (pageSearchStrategy == BEST) {
                     // Search up to N pages for the best candidate
                     boolean immediateAvailable = page.immediateAvailable();
                     boolean isPageExpandable = page.isPageExpandable();
@@ -916,7 +846,7 @@ final class MiMallocByteBufAllocator {
                 page = segmentsPageAlloc(blockSize, blockSize);
             } else if (blockSize <= MEDIUM_BLOCK_SIZE_MAX) { // <= 128 KiB
                 page = segmentsPageAlloc(MEDIUM_PAGE_SIZE, blockSize);
-            } else if (blockSize <= this.allocator.largeBlockSizeMaxParam) { // <= largeBlockSizeMaxParam MiB
+            } else if (blockSize <= allocator.largeBlockSizeMaxParam) { // <= largeBlockSizeMaxParam MiB
                 page = segmentsPageAlloc(blockSize, blockSize);
             } else {
                 page = segmentsHugePageAlloc(blockSize);
@@ -964,8 +894,8 @@ final class MiMallocByteBufAllocator {
             }
             Object result = null;
             Segment segment;
-            while (maxTries-- > 0 && (segment = this.allocator.abandonedSegmentDeque.poll()) != null) {
-                this.allocator.abandonedSegmentCount.decrementAndGet();
+            while (maxTries-- > 0 && (segment = allocator.abandonedSegmentDeque.poll()) != null) {
+                allocator.abandonedSegmentCount.decrementAndGet();
                 segment.abandonedVisits++;
                 // Try to free up pages (due to concurrent frees).
                 boolean hasPage = segmentCheckFree(segment, neededSlices, blockSize);
@@ -1226,7 +1156,7 @@ final class MiMallocByteBufAllocator {
         private int segmentGetReclaimTries() {
             // Limit the tries to 10% (default) of the abandoned segments with at least 8 and at most 1024 tries.
             int perc = 10;
-            long totalCount = this.allocator.abandonedSegmentCount.get();
+            long totalCount = allocator.abandonedSegmentCount.get();
             if (totalCount == 0) {
                 return 0;
             }
@@ -1263,12 +1193,12 @@ final class MiMallocByteBufAllocator {
         private Page segmentsHugePageAlloc(int required) {
             int segmentSize = alignUp(required, SEGMENT_SLICE_SIZE);
             // Allocate the segment.
-            AbstractByteBuf buf = this.allocator.newChunk(segmentSize);
+            AbstractByteBuf buf = allocator.newChunk(segmentSize);
             if (buf == null) {
                 return null; // Signal OOM
             }
             // huge segment only needs 1 slice.
-            Segment segment = new Segment(this.allocator, segmentSize, 1, SEGMENT_HUGE, buf, this);
+            Segment segment = new Segment(allocator, segmentSize, 1, SEGMENT_HUGE, buf, this);
             // Allocate a huge page which spans the entire segment.
             return segmentHugeSpanAllocate(segment, segmentSize);
         }
@@ -1400,7 +1330,7 @@ final class MiMallocByteBufAllocator {
         }
 
         private SpanQueue getSpanQueue(int sliceCount) {
-            assert sliceCount <= this.allocator.sliceCountParam;
+            assert sliceCount <= allocator.sliceCountParam;
             int bin = spanQueueIndex(sliceCount);
             return this.segmentTld.spanQueues[bin];
         }
