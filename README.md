@@ -105,21 +105,42 @@ b.group(group)
 
 ---
 
-## 🔧 Configuration Properties
+## 🔧 Configuration
+### 1. Global level configuration:
+*   **`-Dio.github.neoionet.allocator.mimalloc.heap.strategy`**
+    *   **Allowed Values:** `auto`, `tl`, `shared`
+    *   **Description:** Determines the heap strategy. 
+    * * `auto`: **EventLoop threads use thread-local heaps, non-EventLoop threads use shared heaps**. 
+    * * `tl`: **Force all threads to use thread-local heaps**. 
+    * * `shared`: **Force all threads to use shared heaps**.
+    *   **Default value:** `auto`
+
+*   **`-Dio.github.neoionet.allocator.mimalloc.page.search.strategy`**
+    *   **Allowed Values:** `best`, `first`
+    *   **Description:** Determines the page search strategy. 
+    * * `best` stands for **best-fit**.
+    * * `first` stands for **first-fit**.
+    *   **Default value:** `best`
 
 *   **`-Dio.github.neoionet.allocator.mimalloc.segment.mib`**
     *   **Allowed Values:** `4`, `8`, `16`, `32`
     *   **Description:** Sets the segment size in MiB.
     *   **Default value:** `4`
-
-*   **`-Dio.github.neoionet.allocator.mimalloc.page.search.strategy`**
-    *   **Allowed Values:** `best`, `first`
-    *   **Description:** Determines the page search strategy. `best` stands for **best-fit**, `first` stands for **first-fit**.
-    *   **Default value:** `best`
-
-*   **`-Dio.github.neoionet.allocator.mimalloc.maxSharedHeaps`**
+  
+* **`-Dio.github.neoionet.allocator.mimalloc.maxSharedHeaps`**
     *   **Description:** Sets the max shared heaps count.
     *   **Default value:** `NettyRuntime.availableProcessors() * 4`
+
+### 2. Instance level configuration, which can override the global configuration:
+```
+        ByteBufAllocator allocator = MiByteBufAllocator
+                                         .builder()
+                                         .heapStrategy(MiMallocOption.HeapStrategy.AUTO)
+                                         .pageSearchStrategy(MiMallocOption.PageSearchStrategy.BEST)
+                                         .segmentSizeInMiB(4)
+                                         .maxSharedHeapWrapsLength(16)
+                                         .build();
+```
 
 ## ⭐ Acknowledgments
 
