@@ -173,13 +173,13 @@ final class MiMallocByteBufAllocator {
         sharedHeapWraps[0].heap = new LocalHeap(this, sharedHeapWraps[0].lock);
         this.heapsScanLength = new AtomicInteger(1);
         if (logger.isDebugEnabled()) {
-            logger.debug("allocType: " + allocType + ", effective segmentSizeInBytes in MiB: {}, instance: {}",
+            logger.debug("allocType: " + allocType + ", effective segmentSizeInMiB: {}, instance: {}",
                     segmentSizeInBytesParam / MiB, this);
             logger.debug("allocType: " + allocType +
                     ", effective pageSearchStrategy: {}, instance: {}",
                     pageSearchStrategyParam.name().toLowerCase(Locale.ROOT), this);
             logger.debug("allocType: " + allocType +
-                    ", effective maxSharedHeapWrapsLength: {}, instance: {}",
+                    ", effective maxSharedHeaps: {}, instance: {}",
                     maxSharedHeapWrapsLengthParam, this);
             logger.debug("allocType: " + allocType +
                     ", effective heapStrategy: {}, instance: {}",

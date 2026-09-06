@@ -139,11 +139,11 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
 
         private Builder() {
             if (logger.isDebugEnabled()) {
-                logger.debug("Default segmentSizeInBytes in MiB: {}, instance: {}",
+                logger.debug("Default segmentSizeInMiB: {}, instance: {}",
                         segmentSizeInBytes / MiB, this);
                 logger.debug("Default pageSearchStrategy: {}, instance: {}",
                         pageSearchStrategy.name().toLowerCase(Locale.ROOT), this);
-                logger.debug("Default maxSharedHeapWrapsLength: {}, instance: {}",
+                logger.debug("Default maxSharedHeaps: {}, instance: {}",
                         maxSharedHeapWrapsLength, this);
                 logger.debug("Default heapStrategy: {}, instance: {}",
                         heapStrategy.name().toLowerCase(Locale.ROOT), this);
