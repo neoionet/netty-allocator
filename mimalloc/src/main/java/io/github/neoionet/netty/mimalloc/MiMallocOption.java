@@ -30,8 +30,7 @@ public final class MiMallocOption {
     private static final String SEGMENT_SIZE_PROP_KEY = "io.github.neoionet.allocator.mimalloc.segment.size.mib";
 
     // Allowed segment size: {4, 8, 16, 32} MiB.
-    static int calculateSegmentSizeInBytes(String segmentSizeInMiBVal) {
-        int segmentSizeInMiB = Integer.parseInt(segmentSizeInMiBVal);
+    static int calculateSegmentSizeInBytes(int segmentSizeInMiB) {
         ObjectUtil.checkPositive(segmentSizeInMiB, "segmentSizeInMiB");
         int segmentMibNextPower2 = MathUtil.safeFindNextPositivePowerOfTwo(segmentSizeInMiB);
         if (segmentMibNextPower2 < 4) {
@@ -43,28 +42,35 @@ public final class MiMallocOption {
         return 1 << (Integer.numberOfTrailingZeros(segmentMibNextPower2) + Integer.numberOfTrailingZeros(MiB));
     }
 
-    static int calculateMaxHeapWrapsLength(String maxSharedHeapWrapsLengthVal) {
-        int maxSharedHeapWrapsLength = Integer.parseInt(maxSharedHeapWrapsLengthVal);
+    private static int parseSegmentSizeInBytes(String raw) {
+        return calculateSegmentSizeInBytes(Integer.parseInt(raw));
+    }
+
+    static int calculateMaxHeapWrapsLength(int maxSharedHeapWrapsLength) {
         ObjectUtil.checkPositive(maxSharedHeapWrapsLength, "maxSharedHeapWrapsLength");
         return MathUtil.safeFindNextPositivePowerOfTwo(maxSharedHeapWrapsLength);
     }
 
+    private static int parseMaxHeapWrapsLength(String raw) {
+        return calculateMaxHeapWrapsLength(Integer.parseInt(raw));
+    }
+
     static HeapStrategy getDefaultHeapStrategy() {
-        String value = SystemPropertyUtil.get(HEAP_STRATEGY_PROP_KEY, HeapStrategy.AUTO.name())
-                .toUpperCase(Locale.ROOT);
-        return withPropertyContext(HEAP_STRATEGY_PROP_KEY, value, () -> HeapStrategy.valueOf(value));
+        String value = SystemPropertyUtil.get(HEAP_STRATEGY_PROP_KEY, HeapStrategy.AUTO.name());
+        return withPropertyContext(HEAP_STRATEGY_PROP_KEY, value,
+                () -> HeapStrategy.valueOf(value.toUpperCase(Locale.ROOT)));
     }
 
     static PageSearchStrategy getDefaultPageSearchStrategy() {
-        String value = SystemPropertyUtil.get(PAGE_SEARCH_STRATEGY_PROP_KEY, BEST.name())
-                .toUpperCase(Locale.ROOT);
-        return withPropertyContext(PAGE_SEARCH_STRATEGY_PROP_KEY, value, () -> PageSearchStrategy.valueOf(value));
+        String value = SystemPropertyUtil.get(PAGE_SEARCH_STRATEGY_PROP_KEY, BEST.name());
+        return withPropertyContext(PAGE_SEARCH_STRATEGY_PROP_KEY, value,
+                () -> PageSearchStrategy.valueOf(value.toUpperCase(Locale.ROOT)));
     }
 
     static int getDefaultSegmentSizeInBytes() {
         // Default segment size: 4 MiB.
         String value = SystemPropertyUtil.get(SEGMENT_SIZE_PROP_KEY, "4").trim();
-        return withPropertyContext(SEGMENT_SIZE_PROP_KEY, value, () -> calculateSegmentSizeInBytes(value));
+        return withPropertyContext(SEGMENT_SIZE_PROP_KEY, value, () -> parseSegmentSizeInBytes(value));
     }
 
     static int getDefaultMaxSharedHeapWrapsLength() {
@@ -72,13 +78,15 @@ public final class MiMallocOption {
         // which exceed the common thread pool size (cores * 2), to leave reasonable capacity to expand.
         int maxLength = NettyRuntime.availableProcessors() * 4;
         String value = SystemPropertyUtil.get(MAX_SHARED_HEAP_WRAPS_LENGTH_PROP_KEY, String.valueOf(maxLength)).trim();
-        return withPropertyContext(MAX_SHARED_HEAP_WRAPS_LENGTH_PROP_KEY, value,
-                () -> calculateMaxHeapWrapsLength(value));
+        return withPropertyContext(MAX_SHARED_HEAP_WRAPS_LENGTH_PROP_KEY, value, () -> parseMaxHeapWrapsLength(value));
     }
 
     /**
      * Runs {@code supplier}, wrapping any {@link IllegalArgumentException} it throws with the
-     * offending system property key/value, so the failure is traceable back to a specific -D flag.
+     * offending system property key/value,
+     * including {@link NumberFormatException} thrown while parsing numeric property values,
+     * since it is a subclass of {@link IllegalArgumentException}.
+     * So the failure is traceable back to a specific -D flag.
      */
     private static <T> T withPropertyContext(String propKey, Object rawValue, Supplier<T> supplier) {
         try {

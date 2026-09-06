@@ -151,7 +151,7 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
         }
 
         public Builder segmentSizeInMiB(int segmentSizeInMiB) {
-            this.segmentSizeInBytes = calculateSegmentSizeInBytes(String.valueOf(segmentSizeInMiB));
+            this.segmentSizeInBytes = calculateSegmentSizeInBytes(segmentSizeInMiB);
             return this;
         }
 
@@ -162,7 +162,7 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
         }
 
         public Builder maxSharedHeaps(int maxSharedHeapWrapsLength) {
-            this.maxSharedHeapWrapsLength = calculateMaxHeapWrapsLength(String.valueOf(maxSharedHeapWrapsLength));
+            this.maxSharedHeapWrapsLength = calculateMaxHeapWrapsLength(maxSharedHeapWrapsLength);
             return this;
         }
 
