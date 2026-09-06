@@ -108,7 +108,7 @@ b.group(group)
 ## 🔧 Configuration
 ### 1. Global level configuration:
 *   **`-Dio.github.neoionet.allocator.mimalloc.heap.strategy`**
-    *   **Allowed Values:** `auto`, `tl`, `shared`
+    *   **Allowed Values(case-insensitive):** `auto`, `tl`, `shared`
     *   **Description:** Determines the heap strategy. 
     * * `auto`: **EventLoop threads use thread-local heaps, non-EventLoop threads use shared heaps**. 
     * * `tl`: **Force all threads to use thread-local heaps**. 
@@ -116,7 +116,7 @@ b.group(group)
     *   **Default value:** `auto`
 
 *   **`-Dio.github.neoionet.allocator.mimalloc.page.search.strategy`**
-    *   **Allowed Values:** `best`, `first`
+    *   **Allowed Values(case-insensitive):** `best`, `first`
     *   **Description:** Determines the page search strategy. 
     * * `best` stands for **best-fit**.
     * * `first` stands for **first-fit**.
