@@ -161,7 +161,7 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
             return this;
         }
 
-        public Builder maxSharedHeapWrapsLength(int maxSharedHeapWrapsLength) {
+        public Builder maxSharedHeaps(int maxSharedHeapWrapsLength) {
             this.maxSharedHeapWrapsLength = calculateMaxHeapWrapsLength(maxSharedHeapWrapsLength);
             return this;
         }

@@ -138,7 +138,7 @@ b.group(group)
                                          .heapStrategy(MiMallocOption.HeapStrategy.AUTO)
                                          .pageSearchStrategy(MiMallocOption.PageSearchStrategy.BEST)
                                          .segmentSizeInMiB(4)
-                                         .maxSharedHeapWrapsLength(16)
+                                         .maxSharedHeaps(16)
                                          .build();
 ```
 
