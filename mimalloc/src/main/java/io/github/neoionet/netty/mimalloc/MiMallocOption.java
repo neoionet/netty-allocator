@@ -27,7 +27,7 @@ public final class MiMallocOption {
     private static final String PAGE_SEARCH_STRATEGY_PROP_KEY =
             "io.github.neoionet.allocator.mimalloc.page.search.strategy";
 
-    private static final String SEGMENT_SIZE_PROP_KEY = "io.github.neoionet.allocator.mimalloc.segment.mib";
+    private static final String SEGMENT_SIZE_PROP_KEY = "io.github.neoionet.allocator.mimalloc.segment.size.mib";
 
     // Allowed segment size: {4, 8, 16, 32} MiB.
     static int calculateSegmentSizeInBytes(int segmentSizeInMiB) {
