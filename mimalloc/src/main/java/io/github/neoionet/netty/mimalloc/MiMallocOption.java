@@ -30,7 +30,8 @@ public final class MiMallocOption {
     private static final String SEGMENT_SIZE_PROP_KEY = "io.github.neoionet.allocator.mimalloc.segment.size.mib";
 
     // Allowed segment size: {4, 8, 16, 32} MiB.
-    static int calculateSegmentSizeInBytes(int segmentSizeInMiB) {
+    static int calculateSegmentSizeInBytes(String segmentSizeInMiBVal) {
+        int segmentSizeInMiB = Integer.parseInt(segmentSizeInMiBVal);
         ObjectUtil.checkPositive(segmentSizeInMiB, "segmentSizeInMiB");
         int segmentMibNextPower2 = MathUtil.safeFindNextPositivePowerOfTwo(segmentSizeInMiB);
         if (segmentMibNextPower2 < 4) {
@@ -42,7 +43,8 @@ public final class MiMallocOption {
         return 1 << (Integer.numberOfTrailingZeros(segmentMibNextPower2) + Integer.numberOfTrailingZeros(MiB));
     }
 
-    static int calculateMaxHeapWrapsLength(int maxSharedHeapWrapsLength) {
+    static int calculateMaxHeapWrapsLength(String maxSharedHeapWrapsLengthVal) {
+        int maxSharedHeapWrapsLength = Integer.parseInt(maxSharedHeapWrapsLengthVal);
         ObjectUtil.checkPositive(maxSharedHeapWrapsLength, "maxSharedHeapWrapsLength");
         return MathUtil.safeFindNextPositivePowerOfTwo(maxSharedHeapWrapsLength);
     }
@@ -61,7 +63,7 @@ public final class MiMallocOption {
 
     static int getDefaultSegmentSizeInBytes() {
         // Default segment size: 4 MiB.
-        int value = SystemPropertyUtil.getInt(SEGMENT_SIZE_PROP_KEY, 4);
+        String value = SystemPropertyUtil.get(SEGMENT_SIZE_PROP_KEY, "4").trim();
         return withPropertyContext(SEGMENT_SIZE_PROP_KEY, value, () -> calculateSegmentSizeInBytes(value));
     }
 
@@ -69,7 +71,7 @@ public final class MiMallocOption {
         // Use `NettyRuntime.availableProcessors() * 4` as the default max shared heaps length,
         // which exceed the common thread pool size (cores * 2), to leave reasonable capacity to expand.
         int maxLength = NettyRuntime.availableProcessors() * 4;
-        int value = SystemPropertyUtil.getInt(MAX_SHARED_HEAP_WRAPS_LENGTH_PROP_KEY, maxLength);
+        String value = SystemPropertyUtil.get(MAX_SHARED_HEAP_WRAPS_LENGTH_PROP_KEY, String.valueOf(maxLength)).trim();
         return withPropertyContext(MAX_SHARED_HEAP_WRAPS_LENGTH_PROP_KEY, value,
                 () -> calculateMaxHeapWrapsLength(value));
     }
