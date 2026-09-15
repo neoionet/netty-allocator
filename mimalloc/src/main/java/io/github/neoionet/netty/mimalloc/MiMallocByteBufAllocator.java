@@ -809,7 +809,6 @@ final class MiMallocByteBufAllocator {
             assert page.nextPage == null : page.nextPage;
             assert page.prevPage == null : page.prevPage;
             // Set fields.
-            page.threadDelayedFreeFlag.set(USE_DELAYED_FREE);
             if (page.isHuge) {
                 assert page.adjustment == 0 : page.adjustment;
                 page.reservedBlocks = 1;
@@ -818,6 +817,9 @@ final class MiMallocByteBufAllocator {
                 ((MiByteBufAdapter) page.segment.delegate)._setInt(page.adjustment, -1);
                 page.capacityBlocks = 1;
             } else {
+                if (page.threadDelayedFreeFlag.get() != USE_DELAYED_FREE) {
+                    page.threadDelayedFreeFlag.set(USE_DELAYED_FREE);
+                }
                 page.blockSize = blockSize;
                 int pageSize = page.sliceCount * SEGMENT_SLICE_SIZE;
                 page.reservedBlocks = (short) (pageSize / blockSize);
@@ -2148,7 +2150,7 @@ final class MiMallocByteBufAllocator {
         LocalHeap heap = this.sharedHeapWraps[0].heap;
         // If it is a huge size, or failed to acquire the shared heap lock.
         goodAllocSize = goodAllocSize > 0 ? goodAllocSize : getGoodOsAllocSize(size);
-        return allocateFallback(goodAllocSize, maxCapacity, byteBuf, heap, isReAlloc);
+        return allocateFallback(size, goodAllocSize, maxCapacity, byteBuf, heap, isReAlloc);
     }
 
     private boolean tryExpandHeapsScanLength(int currentHeapsScanLength) {
@@ -2233,8 +2235,9 @@ final class MiMallocByteBufAllocator {
         return byteBuf;
     }
 
-    private MiByteBuf allocateFallback(int size, int maxCapacity, MiByteBuf buf, LocalHeap heap, boolean isReAlloc) {
-        Page page = heap.createHugePage(size);
+    private MiByteBuf allocateFallback(int size, int goodAllocSize, int maxCapacity, MiByteBuf buf,
+                                       LocalHeap heap, boolean isReAlloc) {
+        Page page = heap.createHugePage(goodAllocSize);
         if (page == null) { // out of memory
             PlatformDependent.throwException(new OutOfMemoryError("Unable to allocate " + size + " bytes"));
         }
@@ -2685,6 +2688,7 @@ final class MiMallocByteBufAllocator {
         @Override
         public int getBytes(int index, GatheringByteChannel out, int length)
                 throws IOException {
+            checkIndex(index, length);
             ByteBuffer buf = internalNioBuffer().duplicate();
             buf.clear().position(index).limit(index + length);
             return out.write(buf);
@@ -2693,6 +2697,7 @@ final class MiMallocByteBufAllocator {
         @Override
         public int getBytes(int index, FileChannel out, long position, int length)
                 throws IOException {
+            checkIndex(index, length);
             ByteBuffer buf = internalNioBuffer().duplicate();
             buf.clear().position(index).limit(index + length);
             return out.write(buf, position);
