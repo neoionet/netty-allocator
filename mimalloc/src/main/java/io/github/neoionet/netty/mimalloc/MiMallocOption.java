@@ -101,6 +101,9 @@ public final class MiMallocOption {
         FIRST // first-fit
     }
 
+    /**
+     * WARNING: If you force use `TL` for non-EventLoop threads, it will not do cleanup when threads exit.
+     */
     public enum HeapStrategy {
         AUTO,       // Default: EventLoop threads use thread-local heaps, non-EventLoop threads use shared heaps.
         TL,         // Force all threads to use thread-local heaps.

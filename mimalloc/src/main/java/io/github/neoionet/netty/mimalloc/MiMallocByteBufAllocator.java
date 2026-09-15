@@ -647,6 +647,7 @@ final class MiMallocByteBufAllocator {
                         pageToFull(page, pq);
                         // Limit the full-page movements.
                         if (++fullPageMoveCount >= MAX_FULL_PAGE_MOVE) {
+                            page = null;
                             break;
                         }
                     } else {
@@ -679,6 +680,7 @@ final class MiMallocByteBufAllocator {
                     pageToFull(page, pq);
                     // Limit the full-page movements.
                     if (++fullPageMoveCount >= MAX_FULL_PAGE_MOVE) {
+                        page = null;
                         break;
                     }
                 }
