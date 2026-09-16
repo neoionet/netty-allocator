@@ -774,9 +774,9 @@ final class MiMallocByteBufAllocator {
                 delegate._setInt(block, last);
             }
             assert count == extend;
-            // Prepend to the free list (usually `-1`).
+            // Prepend to the free list.
             assert page.freeList == -1;
-            delegate._setInt(last, -1);
+            delegate._setInt(last, page.freeList);
             page.freeList = start;
         }
 
