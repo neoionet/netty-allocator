@@ -100,8 +100,8 @@ b.group(group)
 
 ## 🚀 Benchmark
 
-* **[Report](https://neoionet.github.io/netty-allocator-benchmark-report/latest/benchmark.html)**
-* **[Specification](https://neoionet.github.io/netty-allocator-benchmark-report/latest/specification.html)**
+* **[Report](https://neoionet.github.io/netty-allocator-benchmark-report/1.2.0/benchmark.html)**
+* **[Specification](https://neoionet.github.io/netty-allocator-benchmark-report/1.2.0/specification.html)**
 
 ---
 
