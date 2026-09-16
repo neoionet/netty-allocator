@@ -35,10 +35,11 @@ import java.util.concurrent.locks.StampedLock;
 import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.CollectType.ABANDON;
 import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.CollectType.FORCE;
 import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.CollectType.NORMAL;
-import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.DelayedFlag.DELAYED_FREEING;
-import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.DelayedFlag.NEVER_DELAYED_FREE;
-import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.DelayedFlag.NO_DELAYED_FREE;
-import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.DelayedFlag.USE_DELAYED_FREE;
+import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.Page.DELAYED_FREEING;
+import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.Page.INIT_EMPTY_THREAD_FREELIST;
+import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.Page.NEVER_DELAYED_FREE;
+import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.Page.NO_DELAYED_FREE;
+import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.Page.USE_DELAYED_FREE;
 import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.SegmentKind.SEGMENT_HUGE;
 import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.SegmentKind.SEGMENT_NORMAL;
 import static io.github.neoionet.netty.mimalloc.MiByteBufUtil.KiB;
@@ -807,7 +808,7 @@ final class MiMallocByteBufAllocator {
             assert page.freeList == -1 : page.freeList;
             assert page.localFreeList == -1 : page.localFreeList;
             assert page.usedBlocks == 0 : page.usedBlocks;
-            assert page.threadFreeList.get() == -1 : page.threadFreeList.get();
+            assert Page.tfBlock(page.threadFreeList.get()) == -1 : page.threadFreeList.get();
             assert page.nextPage == null : page.nextPage;
             assert page.prevPage == null : page.prevPage;
             // Set fields.
@@ -819,8 +820,8 @@ final class MiMallocByteBufAllocator {
                 ((MiByteBufAdapter) page.segment.delegate)._setInt(page.adjustment, -1);
                 page.capacityBlocks = 1;
             } else {
-                if (page.threadDelayedFreeFlag.get() != USE_DELAYED_FREE) {
-                    page.threadDelayedFreeFlag.set(USE_DELAYED_FREE);
+                if (page.threadFreeList.get() != INIT_EMPTY_THREAD_FREELIST) {
+                    page.threadFreeList.set(INIT_EMPTY_THREAD_FREELIST);
                 }
                 page.blockSize = blockSize;
                 int pageSize = page.sliceCount * SEGMENT_SLICE_SIZE;
@@ -970,17 +971,19 @@ final class MiMallocByteBufAllocator {
             }
         }
 
-        private void pageUseDelayedFree(Page page, DelayedFlag delayedFlag, boolean overrideNever) {
+        private void pageUseDelayedFree(Page page, int delayedFlag, boolean overrideNever) {
             while (!pageTryUseDelayedFree(page, delayedFlag, overrideNever)) {
                 Thread.yield();
             }
         }
 
-        private boolean pageTryUseDelayedFree(Page page, DelayedFlag delayedFlag, boolean overrideNever) {
-            DelayedFlag oldDelay;
+        private boolean pageTryUseDelayedFree(Page page, int delayedFlag, boolean overrideNever) {
+            long xdelay;
+            int oldDelay;
             int yieldCount = 0;
             do {
-                oldDelay = page.threadDelayedFreeFlag.get();
+                xdelay = page.threadFreeList.get();
+                oldDelay = Page.tfDelay(xdelay);
                 if (oldDelay == DELAYED_FREEING) {
                     if (yieldCount >= 4) {
                         return false;  // Give up after 4 tries
@@ -992,7 +995,8 @@ final class MiMallocByteBufAllocator {
                 } else if (!overrideNever && oldDelay == NEVER_DELAYED_FREE) {
                     break; // Leave never-delayed flag set.
                 }
-            } while ((oldDelay == DELAYED_FREEING) || !page.threadDelayedFreeFlag.compareAndSet(oldDelay, delayedFlag));
+            } while ((oldDelay == DELAYED_FREEING)
+                    || !page.threadFreeList.compareAndSet(xdelay, Page.tf(delayedFlag, Page.tfBlock(xdelay))));
             return true; // Success
         }
 
@@ -1070,13 +1074,13 @@ final class MiMallocByteBufAllocator {
 
         // Are there any available blocks?
         private boolean pageHasAnyAvailable(Page page) {
-            return page.usedBlocks < page.reservedBlocks || page.threadFreeList.get() != -1;
+            return page.usedBlocks < page.reservedBlocks || Page.tfBlock(page.threadFreeList.get()) != -1;
         }
 
         // Note: can be called on abandoned pages
         private Span segmentPageClear(Page page) {
             assert page.usedBlocks == 0;
-            assert page.threadFreeList.get() == -1;
+            assert Page.tfBlock(page.threadFreeList.get()) == -1;
             page.blockSize = 1;
             page.capacityBlocks = 0;
             page.reservedBlocks = 0;
@@ -1584,58 +1588,6 @@ final class MiMallocByteBufAllocator {
         }
     }
 
-    /**
-     * <pre>
-     * Used by {@link Page#threadDelayedFreeFlag}.
-     * The flag is used to control how blocks are freed in a page.
-     * The page can be in one of the following states:
-     * - {@link #USE_DELAYED_FREE} - The page is using delayed free.
-     * - {@link #DELAYED_FREEING} - The page is currently being freed in a delayed manner.
-     * - {@link #NO_DELAYED_FREE} - The page is not using delayed free.
-     * - {@link #NEVER_DELAYED_FREE} - The page is never using delayed free.
-     *
-     *
-     *                                Initializing a page
-     *                                         │
-     *                                         ▼
-     *                            ┌────────────────────────────┐
-     *       ┌───────────────────►│      USE_DELAYED_FREE      │◄─────────────────────┐
-     *       │                    │      (Delayed free)        │                      │
-     *       │                    └────────────┬───────────────┘                      │
-     *       │                                 │                                      │
-     *       │                    First cross-thread free of the page                 │
-     *       │                                 │                                      │
-     *       │                                 ▼                                      │
-     *       │                    ┌────────────────────────────┐                      │
-     *       │                    │      DELAYED_FREEING       │         Before collecting the delayed list
-     *       │                    │ (Currently processing free)│                      │
-     *       │                    └────────────┬───────────────┘                      │
-     * Before reclaim/free                     │                                      │
-     * an abandoned segment         When freeing completes                            │
-     *       │                                 │                                      │
-     *       │                                 ▼                                      │
-     *       │                    ┌────────────────────────────┐                      │
-     *       │                    │      NO_DELAYED_FREE       │──────────────────────┘
-     *       │                    │   (Delayed free disabled)  │
-     *       │                    └────────────┬───────────────┘
-     *       │                                 │
-     *       │                          On heap abandon
-     *       │                                 │
-     *       │                                 ▼
-     *       │                    ┌────────────────────────────┐
-     *       │                    │    NEVER_DELAYED_FREE      │
-     *       └────────────────────│ (Never use delayed free)   │
-     *                            └────────────────────────────┘
-     *
-     *</pre>
-     */
-    enum DelayedFlag {
-        USE_DELAYED_FREE,
-        DELAYED_FREEING,
-        NO_DELAYED_FREE,
-        NEVER_DELAYED_FREE
-    }
-
     enum SegmentKind {
         SEGMENT_NORMAL, // `SEGMENT_SIZE` size with pages inside.
         SEGMENT_HUGE   // Segment with just one huge page inside.
@@ -1652,7 +1604,64 @@ final class MiMallocByteBufAllocator {
         int freeList = -1;
         int localFreeList = -1;
         short usedBlocks; // number of blocks in use (including blocks in `thread-free list`)
-        final AtomicInteger threadFreeList = new AtomicInteger(-1);
+        /**
+         * <pre>
+         * The flag is used to control how blocks are freed in a page.
+         * The page can be in one of the following states:
+         * - {@link #USE_DELAYED_FREE} - The page is using delayed free.
+         * - {@link #DELAYED_FREEING} - The page is currently being freed in a delayed manner.
+         * - {@link #NO_DELAYED_FREE} - The page is not using delayed free.
+         * - {@link #NEVER_DELAYED_FREE} - The page is never using delayed free.
+         *
+         *
+         *                                Initializing a page
+         *                                         │
+         *                                         ▼
+         *                            ┌────────────────────────────┐
+         *       ┌───────────────────►│      USE_DELAYED_FREE      │◄─────────────────────┐
+         *       │                    │      (Delayed free)        │                      │
+         *       │                    └────────────┬───────────────┘                      │
+         *       │                                 │                                      │
+         *       │                    First cross-thread free of the page                 │
+         *       │                                 │                                      │
+         *       │                                 ▼                                      │
+         *       │                    ┌────────────────────────────┐                      │
+         *       │                    │      DELAYED_FREEING       │         Before collecting the delayed list
+         *       │                    │ (Currently processing free)│                      │
+         *       │                    └────────────┬───────────────┘                      │
+         * Before reclaim/free                     │                                      │
+         * an abandoned segment         When freeing completes                            │
+         *       │                                 │                                      │
+         *       │                                 ▼                                      │
+         *       │                    ┌────────────────────────────┐                      │
+         *       │                    │      NO_DELAYED_FREE       │──────────────────────┘
+         *       │                    │   (Delayed free disabled)  │
+         *       │                    └────────────┬───────────────┘
+         *       │                                 │
+         *       │                          On heap abandon
+         *       │                                 │
+         *       │                                 ▼
+         *       │                    ┌────────────────────────────┐
+         *       │                    │    NEVER_DELAYED_FREE      │
+         *       └────────────────────│ (Never use delayed free)   │
+         *                            └────────────────────────────┘
+         *
+         *</pre>
+         */
+        static final int USE_DELAYED_FREE = 0, DELAYED_FREEING = 1, NO_DELAYED_FREE = 2, NEVER_DELAYED_FREE = 3;
+        /**
+         * Packs the page's thread-free list head and its delayed-free flag into a single atomic value,
+         * so that checking the flag and pushing onto the list happen in one CAS (like mimalloc's `xthread_free`).
+         * <pre>
+         *  63                32 31                 0
+         * +--------------------+--------------------+
+         * |   delayed flag     |    block offset    |
+         * +--------------------+--------------------+
+         * </pre>
+         * Use {@link #tf(int, int)} to pack, and {@link #tfBlock(long)} / {@link #tfDelay(long)} to unpack.
+         */
+        static final long INIT_EMPTY_THREAD_FREELIST = tf(USE_DELAYED_FREE, -1);
+        final AtomicLong threadFreeList = new AtomicLong(INIT_EMPTY_THREAD_FREELIST);
         Page nextPage;
         Page prevPage;
         int adjustment;
@@ -1679,11 +1688,22 @@ final class MiMallocByteBufAllocator {
          *          or is about to be marked as free if it's a huge page.
          */
         int blockSize;
-        final AtomicReference<DelayedFlag> threadDelayedFreeFlag = new AtomicReference<>(USE_DELAYED_FREE);
         boolean isHuge; // `true` if the page is in a huge segment (segment.kind == SEGMENT_HUGE)
 
         // Empty Page Constructor
         Page() { }
+
+        static long tf(int delay, int block) {
+            return ((long) delay << 32) | (block & 0xFFFFFFFFL);
+        }
+
+        static int tfBlock(long value) {
+            return (int) value;
+        }
+
+        static int tfDelay(long value) {
+            return (int) (value >>> 32);
+        }
 
         // Abandon a page with used blocks at the end of a thread.
         // Note: only call if it is ensured that no references exist from
@@ -1751,7 +1771,7 @@ final class MiMallocByteBufAllocator {
 
         private void pageFreeCollect(boolean force) {
             // Collect the thread-free list.
-            if (force || this.threadFreeList.get() != -1) {
+            if (force || Page.tfBlock(this.threadFreeList.get()) != -1) {
                 pageThreadFreeCollect();
             }
             if (this.localFreeList != -1) {
@@ -1802,10 +1822,13 @@ final class MiMallocByteBufAllocator {
         // Note: The exchange must be done atomically as this is used right after moving to the full list,
         // and we need to ensure that there was no race where the page became unfull just before the move.
         private void pageThreadFreeCollect() {
+            long xHead;
             int head;
             do {
-                head = this.threadFreeList.get();
-            } while (head != -1 && !this.threadFreeList.compareAndSet(head, -1));
+                xHead = this.threadFreeList.get();
+                head = Page.tfBlock(xHead);
+                // Only take the list, keep the delayed flag unchanged.
+            } while (head != -1 && !this.threadFreeList.compareAndSet(xHead, Page.tf(Page.tfDelay(xHead), -1)));
             // return if the list is empty
             if (head == -1) {
                 return;
@@ -2026,12 +2049,15 @@ final class MiMallocByteBufAllocator {
     private void freeBlockDelayedMt(Page page, int block) {
         // Try to put the block on either the page-local thread_free list,
         // or the heap delayed free list (if this is the first non-local free in that page).
+        final AtomicLong threadFreeList = page.threadFreeList;
         boolean useDelayed;
+        long xHead;
         do {
-            useDelayed = page.threadDelayedFreeFlag.get() == USE_DELAYED_FREE;
-        } while (useDelayed && !page.threadDelayedFreeFlag.compareAndSet(USE_DELAYED_FREE, DELAYED_FREEING));
+            xHead = threadFreeList.get();
+            useDelayed = Page.tfDelay(xHead) == USE_DELAYED_FREE;
+        } while (useDelayed && !threadFreeList.compareAndSet(xHead, Page.tf(DELAYED_FREEING, Page.tfBlock(xHead))));
         // If this was the first non-local free, we need to push it on the heap delayed free list.
-        // `useDelayed` will only be true if `threadDelayedFreeFlag == USE_DELAYED_FREE`.
+        // `useDelayed` will only be true if the delayed flag of `threadFreeList` was `USE_DELAYED_FREE`.
         if (useDelayed) {
             try {
                 // Racy read on `heap`, but ok because `DELAYED_FREEING` is set.
@@ -2046,19 +2072,25 @@ final class MiMallocByteBufAllocator {
                     delayedBlock.nextDelayedBlock = dfree;
                 } while (!heap.threadDelayedFreeList.compareAndSet(dfree, delayedBlock));
             } finally { // Make sure we always reset the `DELAYED_FREEING` to `NO_DELAYED_FREE`.
-                if (!page.threadDelayedFreeFlag.compareAndSet(DELAYED_FREEING, NO_DELAYED_FREE)) {
-                    // Should not happen.
-                    PlatformDependent.throwException(new IllegalStateException("Failed to reset DELAYED_FREEING flag"));
-                }
+                // Other threads may push blocks, and the owner may take the list, while the flag is
+                // `DELAYED_FREEING`, so only the flag is reset here, keeping the current list head.
+                long xCurrent;
+                do {
+                    xCurrent = threadFreeList.get();
+                    if (Page.tfDelay(xCurrent) != DELAYED_FREEING) {
+                        // Should not happen.
+                        PlatformDependent.throwException(
+                                new IllegalStateException("Failed to reset DELAYED_FREEING flag"));
+                    }
+                } while (!threadFreeList.compareAndSet(xCurrent, Page.tf(NO_DELAYED_FREE, Page.tfBlock(xCurrent))));
             }
         } else { // Common path
             MiByteBufAdapter delegate = (MiByteBufAdapter) page.segment.delegate;
-            AtomicInteger threadFreeList = page.threadFreeList;
-            int current;
+            long xCurrent;
             do {
-                current = threadFreeList.get();
-                delegate._setInt(block, current);
-            } while (!threadFreeList.compareAndSet(current, block));
+                xCurrent = threadFreeList.get();
+                delegate._setInt(block, Page.tfBlock(xCurrent));
+            } while (!threadFreeList.compareAndSet(xCurrent, Page.tf(Page.tfDelay(xCurrent), block)));
         }
     }
 
