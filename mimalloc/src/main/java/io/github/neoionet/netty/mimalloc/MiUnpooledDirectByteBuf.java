@@ -1,12 +1,26 @@
 package io.github.neoionet.netty.mimalloc;
 
 import io.netty.buffer.ByteBufAllocator;
+import io.netty.util.internal.CleanableDirectBuffer;
+import io.netty.util.internal.PlatformDependent;
 import io.netty.buffer.UnpooledDirectByteBuf;
 
 class MiUnpooledDirectByteBuf extends UnpooledDirectByteBuf implements MiByteBufAdapter {
 
     MiUnpooledDirectByteBuf(ByteBufAllocator alloc, int initialCapacity, int maxCapacity) {
-        super(alloc, initialCapacity, maxCapacity);
+        // Netty's constructor that permits expensive clean is package-private, so start with an empty buffer
+        // and grow it via `capacity(int)`, which allocates through the overridden `allocateDirectBuffer(int)`.
+        super(alloc, 0, maxCapacity);
+        if (initialCapacity > 0) {
+            capacity(initialCapacity);
+        }
+    }
+
+    @Override
+    protected CleanableDirectBuffer allocateDirectBuffer(int capacity) {
+        // Chunks are long-lived and released explicitly by the allocator, so an expensive clean is acceptable,
+        // the same as Netty's own pooling allocators (`PoolArena`, `AdaptiveByteBufAllocator`).
+        return PlatformDependent.allocateDirect(capacity, true);
     }
 
     @Override
