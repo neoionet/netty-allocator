@@ -128,8 +128,6 @@ final class MiMallocByteBufAllocator {
     // Collect heaps every N(default 10000) generic allocation calls.
     private static final int HEAP_OPTION_GENERIC_COLLECT = 10000;
 
-    private static final long DEFAULT_RESERVED_SEGMENT_RETIRE_NANO = TimeUnit.SECONDS.toNanos(60);
-
     private final AtomicLong usedMemory = new AtomicLong();
 
     private final SharedHeapWrap[] sharedHeapWraps;
@@ -143,6 +141,8 @@ final class MiMallocByteBufAllocator {
     // `Thread.threadId()` is documented to always return a positive value,
     // so -1L is safe to use as a sentinel for "no owner".
     private static final long NO_OWNER_THREAD_ID = -1L;
+
+    private static final long MIN_SEGMENTS_DECAY_NANOS_INTERVAL = TimeUnit.SECONDS.toNanos(10);
 
     MiMallocByteBufAllocator(ChunkAllocator chunkAllocator, MiByteBufAllocator.Builder builder, AllocType allocType) {
         this.chunkAllocator = chunkAllocator;
@@ -318,6 +318,14 @@ final class MiMallocByteBufAllocator {
             return this.arrayDeque.pollFirst();
         }
 
+        public E pollLast() {
+            return this.arrayDeque.pollLast();
+        }
+
+        public int size() {
+            return this.arrayDeque.size();
+        }
+
         public void clear() {
             this.arrayDeque.clear();
         }
@@ -338,8 +346,9 @@ final class MiMallocByteBufAllocator {
         private static final byte VISIT_TYPE_PAGE_MARK = 0;
         private static final byte VISIT_TYPE_PAGE_COLLECT = 1;
 
-        private Segment reservedNormalSegment;
-        private long reservedNormalSegmentNano;
+        private final ArrayDequeBounded<Segment> reservedNormalSegmentDeque;
+        private int coldReservedSegmentCount;
+        private long lastSegmentsDecayNano = System.nanoTime();
         private final StampedLock sharedLock;
         private final ArrayDequeBounded<MiByteBuf> miBufLocalDeque;
         private final Queue<MiByteBuf> miBufCrossThreadsQueue;
@@ -355,7 +364,9 @@ final class MiMallocByteBufAllocator {
             this.miBufLocalDeque = new ArrayDequeBounded<>(1024);
             this.miBufCrossThreadsQueue = PlatformDependent.newFixedMpscQueue(1024);
             this.delayedBlockDeque = PlatformDependent.newFixedMpmcQueue(1024);
-            pageQueues = new PageQueue[] {
+            int maxReservedSegmentCount = Math.min(Math.max(1, 32 * MiB / allocator.segmentSizeInBytesParam), 8);
+            this.reservedNormalSegmentDeque = new ArrayDequeBounded<>(maxReservedSegmentCount);
+            this.pageQueues = new PageQueue[] {
                     new PageQueue(1, 0), // placeholder, not used.
                     new PageQueue(1, 1), new PageQueue(2, 2),
                     new PageQueue(3, 3), new PageQueue(4, 4),
@@ -432,10 +443,11 @@ final class MiMallocByteBufAllocator {
         }
 
         private void freeReservedSegment() {
-            if (this.reservedNormalSegment != null) {
-                this.reservedNormalSegment.deallocate();
+            Segment segment;
+            while ((segment = this.reservedNormalSegmentDeque.pollFirst()) != null) {
+                segment.deallocate();
             }
-            this.reservedNormalSegment = null;
+            this.coldReservedSegmentCount = 0;
         }
 
         // Collect abandoned segments
@@ -1007,9 +1019,7 @@ final class MiMallocByteBufAllocator {
                 // Expensive assertion: the spanQueues should not contain this segment anymore.
                 assert assertSegmentNotExistInSpanQueue(segment);
                 LocalHeap heap = segment.ownerHeap;
-                if (heap.reservedNormalSegment == null) {
-                    heap.reservedNormalSegment = segment;
-                    heap.reservedNormalSegmentNano = System.nanoTime();
+                if (heap.reservedNormalSegmentDeque.offerFirst(segment)) {
                     return;
                 }
             }
@@ -1172,7 +1182,8 @@ final class MiMallocByteBufAllocator {
         // Allocate a segment.
         private Segment segmentAllocNormal() {
             Segment segment;
-            if (this.reservedNormalSegment == null) {
+            if ((segment = reservedNormalSegmentDeque.pollFirst()) == null) {
+                this.coldReservedSegmentCount = 0;
                 int segmentSizeInBytesParam = allocator.segmentSizeInBytesParam;
                 AbstractByteBuf chunk = allocator.newChunk(segmentSizeInBytesParam);
                 if (chunk == null) {
@@ -1181,8 +1192,8 @@ final class MiMallocByteBufAllocator {
                 segment = new Segment(allocator, segmentSizeInBytesParam, allocator.sliceCountParam, SEGMENT_NORMAL,
                         chunk, this);
             } else {
-                segment = this.reservedNormalSegment;
-                this.reservedNormalSegment = null;
+                segment.ownerThreadId = Thread.currentThread().getId();
+                this.coldReservedSegmentCount = Math.min(coldReservedSegmentCount, reservedNormalSegmentDeque.size());
             }
             // Initialize the initial free spans.
             segmentSpanFree(segment, 0, segment.sliceEntries);
@@ -2261,10 +2272,14 @@ final class MiMallocByteBufAllocator {
         if (!page.isHuge && page.reservedBlocks == page.usedBlocks) {
             heap.pageToFull(page, heap.heapPageQueueOf(page));
         }
-        if (heapCollected && heap.reservedNormalSegment != null &&
-                System.nanoTime() - heap.reservedNormalSegmentNano > DEFAULT_RESERVED_SEGMENT_RETIRE_NANO) {
-            heap.reservedNormalSegment.deallocate();
-            heap.reservedNormalSegment = null;
+        if (heapCollected && System.nanoTime() - heap.lastSegmentsDecayNano > MIN_SEGMENTS_DECAY_NANOS_INTERVAL) {
+            Segment segment;
+            int n = Math.min((heap.coldReservedSegmentCount + 1) >>> 1, 8);
+            while (n-- > 0 && (segment = heap.reservedNormalSegmentDeque.pollLast()) != null) {
+                segment.deallocate();
+            }
+            heap.coldReservedSegmentCount = heap.reservedNormalSegmentDeque.size();
+            heap.lastSegmentsDecayNano = System.nanoTime();
         }
         return byteBuf;
     }
