@@ -15,7 +15,6 @@
     <packaging>pom</packaging>
     <modules>
         <module>mimalloc</module>
-        <module>benchmark</module>
     </modules>
 
     <properties>
@@ -132,6 +131,15 @@
                     </plugin>
                 </plugins>
             </build>
+        </profile>
+        <profile>
+            <id>benchmark</id>
+            <activation>
+                <jdk>[9,)</jdk>
+            </activation>
+            <modules>
+                <module>benchmark</module>
+            </modules>
         </profile>
     </profiles>
 

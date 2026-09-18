@@ -15,6 +15,7 @@
  */
 package io.github.neoionet.netty.microbenchmark;
 
+import io.github.neoionet.netty.microbenchmark.data.ECommercePattern;
 import io.github.neoionet.netty.microbenchmark.data.WebSocketProxyPattern;
 import io.github.neoionet.netty.microbenchmark.data.ApiGatewayPattern;
 import io.netty.buffer.AdaptiveByteBufAllocator;
@@ -37,13 +38,21 @@ import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.TearDown;
 import org.openjdk.jmh.annotations.Warmup;
+import org.openjdk.jmh.infra.BenchmarkParams;
 import org.openjdk.jmh.runner.Runner;
 import org.openjdk.jmh.runner.RunnerException;
 import org.openjdk.jmh.runner.options.Options;
 import org.openjdk.jmh.runner.options.OptionsBuilder;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.Set;
 import java.util.SplittableRandom;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
+import java.util.stream.Stream;
 
 /**
  * This is a modified portion of `io.netty.microbench.buffer.ByteBufAllocatorAllocPatternBenchmark`
@@ -71,7 +80,8 @@ public class ByteBufAllocatorAllocPatternBenchmark {
 
     public enum SizePattern {
         API_GATEWAY(() -> ApiGatewayPattern.FLATTENED_SIZE_ARRAY),
-        SOCKET_PROXY(() -> WebSocketProxyPattern.FLATTENED_SIZE_ARRAY);
+        SOCKET_PROXY(() -> WebSocketProxyPattern.FLATTENED_SIZE_ARRAY),
+        E_COMMERCE(() -> ECommercePattern.FLATTENED_SIZE_ARRAY);
         private final Supplier<int[]> factory;
         SizePattern(Supplier<int[]> factory) {
             this.factory = factory;
@@ -84,6 +94,7 @@ public class ByteBufAllocatorAllocPatternBenchmark {
     @Param({
             "SOCKET_PROXY",
             "API_GATEWAY",
+            "E_COMMERCE",
     })
     public SizePattern sizePattern;
     private int[] sizesArray;
@@ -125,6 +136,8 @@ public class ByteBufAllocatorAllocPatternBenchmark {
            "65536", // 64K buffers per thread
     })
     public int MAX_LIVE_BUFFERS;
+
+    public static Set<BenchmarkParams> benchParamsSet = ConcurrentHashMap.newKeySet();
 
     @State(Scope.Thread)
     public static class AllocationPatternState {
@@ -234,8 +247,44 @@ public class ByteBufAllocatorAllocPatternBenchmark {
             }
         }
 
+        private static void printProcRSS() throws Exception {
+            System.out.println("cRSS-pRSS:[" + ProcessMemoryUtil.getSelfRssKb() / 1024 + ", " +
+                    ProcessMemoryUtil.getSelfPeakRssKb() / 1024 + "]");
+        }
+
+        private void printUsedMemory(BenchmarkParams benchmarkParams) throws Exception {
+            long usedMem = 0;
+            if (allocator instanceof PooledByteBufAllocator) {
+                if (benchmarkParams.getBenchmark().contains("directAllocation")) {
+                    usedMem = ((PooledByteBufAllocator) allocator).metric().usedDirectMemory();
+                } else {
+                    usedMem = ((PooledByteBufAllocator) allocator).metric().usedHeapMemory();
+                }
+            }
+            if (allocator instanceof AdaptiveByteBufAllocator) {
+                if (benchmarkParams.getBenchmark().contains("directAllocation")) {
+                    usedMem = ((AdaptiveByteBufAllocator) allocator).usedDirectMemory();
+                } else {
+                    usedMem = ((AdaptiveByteBufAllocator) allocator).usedHeapMemory();
+                }
+            }
+            if (allocator instanceof MiByteBufAllocator) {
+                if (benchmarkParams.getBenchmark().contains("directAllocation")) {
+                    usedMem = ((MiByteBufAllocator) allocator).usedDirectMemory();
+                } else {
+                    usedMem = ((MiByteBufAllocator) allocator).usedHeapMemory();
+                }
+
+            }
+            System.out.println(";used-memory:[" + usedMem / 1024 / 1024 + "]");
+        }
+
         @TearDown
-        public void tearDown() throws InterruptedException {
+        public void tearDown(BenchmarkParams benchmarkParams) throws Exception {
+            if (benchParamsSet.add(benchmarkParams)) {
+                printProcRSS();
+                printUsedMemory(benchmarkParams);
+            }
             releaseBufferArray(buffers);
         }
     }
@@ -244,6 +293,7 @@ public class ByteBufAllocatorAllocPatternBenchmark {
     public void setupAllocator() {
         allocator = allocatorType.create();
         sizesArray = sizePattern.create();
+        benchParamsSet.clear();
     }
 
     @Benchmark
@@ -261,5 +311,37 @@ public class ByteBufAllocatorAllocPatternBenchmark {
                 .include(ByteBufAllocatorAllocPatternBenchmark.class.getSimpleName())
                 .build();
         new Runner(opt).run();
+    }
+
+    private static final class ProcessMemoryUtil {
+
+        private ProcessMemoryUtil() {}
+
+        static long getSelfRssKb() {
+            return readField("VmRSS:");
+        }
+
+        static long getSelfPeakRssKb() {
+            return readField("VmHWM:");
+        }
+
+        private static long readField(String prefix) {
+            Path statusPath = Paths.get("/proc/self/status");
+            try (Stream<String> lines = Files.lines(statusPath)) {
+                return lines
+                        .filter(line -> line.startsWith(prefix))
+                        .findFirst()
+                        .map(ProcessMemoryUtil::parseKbLine)
+                        .orElseThrow(() -> new IllegalStateException(prefix + " not found in /proc/self/status"));
+            } catch (IOException e) {
+                System.err.println("Failed to read /proc/self/status");
+            }
+            return -1;
+        }
+
+        private static long parseKbLine(String line) {
+            String[] parts = line.trim().split("\\s+");
+            return Long.parseLong(parts[1]);
+        }
     }
 }
