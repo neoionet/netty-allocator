@@ -2274,7 +2274,7 @@ final class MiMallocByteBufAllocator {
         }
         if (heapCollected && System.nanoTime() - heap.lastSegmentsDecayNano > MIN_SEGMENTS_DECAY_NANOS_INTERVAL) {
             Segment segment;
-            int n = Math.min((heap.coldReservedSegmentCount + 1) >>> 1, 8);
+            int n = (heap.coldReservedSegmentCount + 1) >>> 1;
             while (n-- > 0 && (segment = heap.reservedNormalSegmentDeque.pollLast()) != null) {
                 segment.deallocate();
             }
