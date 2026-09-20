@@ -147,6 +147,8 @@ final class MiMallocByteBufAllocator {
     private final boolean chunkHasArray;
     private final boolean chunkHasMemoryAddress;
 
+    private OutOfMemoryError lastOutOfMemoryError;
+
     MiMallocByteBufAllocator(ChunkAllocator chunkAllocator, MiByteBufAllocator.Builder builder, AllocType allocType) {
         this.chunkAllocator = chunkAllocator;
         this.chunkHasArray = chunkAllocator.chunkHasArray();
@@ -1915,7 +1917,8 @@ final class MiMallocByteBufAllocator {
             this.usedMemory.addAndGet(size);
             return buf;
         } catch (OutOfMemoryError e) {
-            return null; // OOM
+            lastOutOfMemoryError = e;
+            return null; // Signal OOM
         }
     }
 
@@ -2269,7 +2272,8 @@ final class MiMallocByteBufAllocator {
             page = heap.findPage(size);
         }
         if (page == null) { // out of memory
-            PlatformDependent.throwException(new OutOfMemoryError("Unable to allocate " + size + " bytes"));
+            assert lastOutOfMemoryError != null;
+            throw lastOutOfMemoryError;
         }
         int block = page.freeList;
         assert block > -1;
@@ -2306,7 +2310,8 @@ final class MiMallocByteBufAllocator {
                                        LocalHeap heap, boolean isReAlloc) {
         Page page = heap.createHugePage(goodAllocSize);
         if (page == null) { // out of memory
-            PlatformDependent.throwException(new OutOfMemoryError("Unable to allocate " + size + " bytes"));
+            assert lastOutOfMemoryError != null;
+            throw lastOutOfMemoryError;
         }
         int block = page.freeList;
         assert block == 0;
