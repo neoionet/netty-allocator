@@ -144,8 +144,11 @@ final class MiMallocByteBufAllocator {
 
     private static final long MIN_SEGMENTS_DECAY_NANOS_INTERVAL = TimeUnit.SECONDS.toNanos(10);
 
+    private final AllocType allocType;
+
     MiMallocByteBufAllocator(ChunkAllocator chunkAllocator, MiByteBufAllocator.Builder builder, AllocType allocType) {
         this.chunkAllocator = chunkAllocator;
+        this.allocType = allocType;
         this.segmentSizeInBytesParam = builder.segmentSizeInBytes;
         this.sliceCountParam = segmentSizeInBytesParam / SEGMENT_SLICE_SIZE;
         // segmentSizeInBytesParam / 2
@@ -774,7 +777,7 @@ final class MiMallocByteBufAllocator {
                 assert count++ > 0; // Increase `count` if assertion enabled
             }
             int block = start;
-            MiByteBufAdapter delegate = (MiByteBufAdapter) page.segment.delegate;
+            MiByteBufAdapter delegate = (MiByteBufAdapter) page.delegate;
             if (extend > 1) {
                 while (block < last - bSize) {
                     int next = block + bSize;
@@ -829,7 +832,7 @@ final class MiMallocByteBufAllocator {
                 page.reservedBlocks = 1;
                 page.retireExpire = 0;
                 page.freeList = page.adjustment;
-                ((MiByteBufAdapter) page.segment.delegate)._setInt(page.adjustment, -1);
+                ((MiByteBufAdapter) page.delegate)._setInt(page.adjustment, -1);
                 page.capacityBlocks = 1;
             } else {
                 if (page.threadFreeList.get() != INIT_EMPTY_THREAD_FREELIST) {
@@ -1605,7 +1608,9 @@ final class MiMallocByteBufAllocator {
     }
 
     static class Page {
-        Segment segment;
+        final Segment segment;
+        final AbstractByteBuf delegate;
+        final MiMallocByteBufAllocator allocator;
         short capacityBlocks; // number of blocks created.
         short reservedBlocks; // number of blocks reserved.
         boolean isInFull;
@@ -1702,7 +1707,15 @@ final class MiMallocByteBufAllocator {
         boolean isHuge; // `true` if the page is in a huge segment (segment.kind == SEGMENT_HUGE)
 
         // Empty Page Constructor
-        Page() { }
+        Page() {
+            this(null, null, null);
+        }
+
+        Page(Segment segment, AbstractByteBuf delegate, MiMallocByteBufAllocator allocator) {
+            this.segment = segment;
+            this.delegate = delegate;
+            this.allocator = allocator;
+        }
 
         static long tf(int delay, int block) {
             return ((long) delay << 32) | (block & 0xFFFFFFFFL);
@@ -1796,7 +1809,7 @@ final class MiMallocByteBufAllocator {
                     int tail = this.localFreeList;
                     checkFreeListBlock(tail);
                     int next;
-                    MiByteBufAdapter delegate = (MiByteBufAdapter) this.segment.delegate;
+                    MiByteBufAdapter delegate = (MiByteBufAdapter) this.delegate;
                     while ((next = delegate._getInt(tail)) != -1) {
                         // If `count > maxCount` there was a memory corruption
                         // (possibly a cyclic list due to a double local free).
@@ -1917,7 +1930,7 @@ final class MiMallocByteBufAllocator {
         int sliceOffset; // Distance from the actual page data slice (0 if a page).
 
         Span(Segment segment, int adjustment, int sliceCount, Span nextSpan, Span prevSpan, int sliceIndex) {
-            this.segment = segment;
+            super(segment, segment.delegate, segment.parent);
             this.adjustment = adjustment;
             this.sliceCount = sliceCount;
             this.nextSpan = nextSpan;
@@ -2096,7 +2109,7 @@ final class MiMallocByteBufAllocator {
                 } while (!threadFreeList.compareAndSet(xCurrent, Page.tf(NO_DELAYED_FREE, Page.tfBlock(xCurrent))));
             }
         } else { // Common path
-            MiByteBufAdapter delegate = (MiByteBufAdapter) page.segment.delegate;
+            MiByteBufAdapter delegate = (MiByteBufAdapter) page.delegate;
             long xCurrent;
             do {
                 xCurrent = threadFreeList.get();
@@ -2222,8 +2235,9 @@ final class MiMallocByteBufAllocator {
                 if (byteBuf == null) {
                     byteBuf = heap.getMiByteBuf();
                 }
-                page.freeList = ((MiByteBufAdapter) page.segment.delegate)._getInt(block);
-                byteBuf.init(page, block, size, maxCapacity, isReAlloc);
+                AbstractByteBuf delegate = page.delegate;
+                page.freeList = ((MiByteBufAdapter) delegate)._getInt(block);
+                byteBuf.init(page, block, size, maxCapacity, isReAlloc, delegate, allocType);
                 page.usedBlocks++;
                 return byteBuf;
             }
@@ -2265,8 +2279,9 @@ final class MiMallocByteBufAllocator {
         if (byteBuf == null) {
             byteBuf = heap.getMiByteBuf();
         }
-        page.freeList = ((MiByteBufAdapter) page.segment.delegate)._getInt(block);
-        byteBuf.init(page, block, size, maxCapacity, isReAlloc);
+        AbstractByteBuf delegate =  page.delegate;
+        page.freeList = ((MiByteBufAdapter) delegate)._getInt(block);
+        byteBuf.init(page, block, size, maxCapacity, isReAlloc, delegate, allocType);
         page.usedBlocks++;
         // Move page to the full queue.
         if (!page.isHuge && page.reservedBlocks == page.usedBlocks) {
@@ -2296,8 +2311,9 @@ final class MiMallocByteBufAllocator {
         if (buf == null) {
             buf = new MiByteBuf();
         }
-        page.freeList = ((MiByteBufAdapter) page.segment.delegate)._getInt(block);
-        buf.init(page, block, size, maxCapacity, isReAlloc);
+        AbstractByteBuf delegate =  page.delegate;
+        page.freeList = ((MiByteBufAdapter) delegate)._getInt(block);
+        buf.init(page, block, size, maxCapacity, isReAlloc, delegate, allocType);
         page.usedBlocks++;
         return buf;
     }
@@ -2408,7 +2424,8 @@ final class MiMallocByteBufAllocator {
             super(0);
         }
 
-        void init(Page page, int block, int length, int maxCapacity, boolean isReAlloc) {
+        void init(Page page, int block, int length, int maxCapacity, boolean isReAlloc,
+                  AbstractByteBuf delegate, AllocType allocType) {
             assert page != null;
             assert page.blockSize > 1;
             assert block > -1;
@@ -2423,10 +2440,12 @@ final class MiMallocByteBufAllocator {
             this.maxFastCapacity = page.blockSize;
             this.adjustment = block;
             maxCapacity(maxCapacity);
-            this.rootParent = page.segment.delegate;
+            this.rootParent = delegate;
             this.tmpNioBuf = null;
-            this.hasArray = rootParent.hasArray();
-            this.hasMemoryAddress = rootParent.hasMemoryAddress();
+            this.hasArray = allocType == AllocType.HEAP;
+            assert hasArray == delegate.hasArray();
+            this.hasMemoryAddress = !hasArray && rootParent.hasMemoryAddress();
+            assert hasMemoryAddress == delegate.hasMemoryAddress();
         }
 
         @Override
@@ -2434,11 +2453,9 @@ final class MiMallocByteBufAllocator {
             assert this.adjustment > -1;
             this.rootParent = null;
             this.tmpNioBuf = null;
-            Segment segment = this.page.segment;
-            MiMallocByteBufAllocator allocator = segment.parent;
             Page page = this.page;
             this.page = null;
-            allocator.free(page, this.adjustment, this);
+            page.allocator.free(page, this.adjustment, this);
         }
 
         public ByteBuf capacity(int newCapacity) {
@@ -2453,7 +2470,7 @@ final class MiMallocByteBufAllocator {
                 return this;
             }
             // Reallocation required.
-            MiMallocByteBufAllocator allocator = this.page.segment.parent;
+            MiMallocByteBufAllocator allocator = this.page.allocator;
             Page oldPage = this.page;
             int oldBlock = this.adjustment;
             int baseOldRootIndex = adjustment;
