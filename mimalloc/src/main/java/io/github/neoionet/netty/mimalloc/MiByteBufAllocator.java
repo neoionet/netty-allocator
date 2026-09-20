@@ -1,10 +1,12 @@
 package io.github.neoionet.netty.mimalloc;
 
+import io.netty.buffer.AbstractByteBuf;
 import io.netty.buffer.AbstractByteBufAllocator;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.ByteBufAllocatorMetric;
 import io.netty.buffer.ByteBufAllocatorMetricProvider;
+import io.netty.buffer.UnpooledByteBufAllocator;
 import io.netty.buffer.UnpooledDirectByteBuf;
 import io.netty.buffer.UnpooledHeapByteBuf;
 import io.netty.util.internal.ObjectUtil;
@@ -40,8 +42,6 @@ import static io.github.neoionet.netty.mimalloc.MiMallocOption.getDefaultSegment
 @UnstableApi
 public final class MiByteBufAllocator extends AbstractByteBufAllocator
         implements ByteBufAllocatorMetricProvider, ByteBufAllocatorMetric {
-
-    private static final InternalLogger logger = InternalLoggerFactory.getInstance(MiByteBufAllocator.class);
 
     private final MiMallocByteBufAllocator direct;
     private final MiMallocByteBufAllocator heap;
@@ -116,9 +116,42 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
                     new MiUnpooledUnsafeHeapByteBuf(allocator, initialCapacity, maxCapacity) :
                     new MiUnpooledHeapByteBuf(allocator, initialCapacity, maxCapacity);
         }
+
+        @Override
+        public boolean chunkHasArray() {
+            return true;
+        }
+
+        @Override
+        public boolean chunkHasMemoryAddress() {
+            return false;
+        }
     }
 
     private static final class DirectChunkAllocator implements MiMallocByteBufAllocator.ChunkAllocator {
+        private static final InternalLogger logger = InternalLoggerFactory.getInstance(DirectChunkAllocator.class);
+        private static final boolean DIRECT_CHUNK_HAS_MEMORY_ADDRESS = probeDirectChunkHasMemoryAddress();
+
+        private static boolean probeDirectChunkHasMemoryAddress() {
+            AbstractByteBuf chunk = null;
+            try {
+                chunk = MiByteBufUtil.newDirectByteBuf(UnpooledByteBufAllocator.DEFAULT, 1, 1);
+                return chunk.hasMemoryAddress();
+            } catch (Throwable t) {
+                logger.debug("Failed to probe direct chunk memory address support", t);
+                return false; // Assume no memory address.
+            } finally {
+                if (chunk != null) {
+                    try {
+                        chunk.release();
+                    } catch (Throwable t) {
+                        logger.error("Failed to release the direct chunk", t);
+                        // Nothing we can do.
+                    }
+                }
+            }
+        }
+
         private final ByteBufAllocator allocator;
 
         private DirectChunkAllocator(ByteBufAllocator allocator) {
@@ -129,9 +162,20 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
         public UnpooledDirectByteBuf allocate(int initialCapacity, int maxCapacity) {
             return MiByteBufUtil.newDirectByteBuf(allocator, initialCapacity, maxCapacity);
         }
+
+        @Override
+        public boolean chunkHasArray() {
+            return false;
+        }
+
+        @Override
+        public boolean chunkHasMemoryAddress() {
+            return DIRECT_CHUNK_HAS_MEMORY_ADDRESS;
+        }
     }
 
     public static final class Builder {
+        private static final InternalLogger logger = InternalLoggerFactory.getInstance(Builder.class);
         int segmentSizeInBytes = getDefaultSegmentSizeInBytes();
         PageSearchStrategy pageSearchStrategy = getDefaultPageSearchStrategy();
         int maxSharedHeapWrapsLength = getDefaultMaxSharedHeapWrapsLength();

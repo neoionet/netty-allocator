@@ -144,11 +144,13 @@ final class MiMallocByteBufAllocator {
 
     private static final long MIN_SEGMENTS_DECAY_NANOS_INTERVAL = TimeUnit.SECONDS.toNanos(10);
 
-    private final AllocType allocType;
+    private final boolean chunkHasArray;
+    private final boolean chunkHasMemoryAddress;
 
     MiMallocByteBufAllocator(ChunkAllocator chunkAllocator, MiByteBufAllocator.Builder builder, AllocType allocType) {
         this.chunkAllocator = chunkAllocator;
-        this.allocType = allocType;
+        this.chunkHasArray = chunkAllocator.chunkHasArray();
+        this.chunkHasMemoryAddress = chunkAllocator.chunkHasMemoryAddress();
         this.segmentSizeInBytesParam = builder.segmentSizeInBytes;
         this.sliceCountParam = segmentSizeInBytesParam / SEGMENT_SLICE_SIZE;
         // segmentSizeInBytesParam / 2
@@ -1744,7 +1746,7 @@ final class MiMallocByteBufAllocator {
         // Regular free of a local thread block.
         private void freeBlockLocal(int block, boolean checkFull, LocalHeap heap) {
             // Actual free: push on the local free list.
-            ((MiByteBufAdapter) segment.delegate)._setInt(block, this.localFreeList);
+            ((MiByteBufAdapter) this.delegate)._setInt(block, this.localFreeList);
             this.localFreeList = block;
             if (--this.usedBlocks == 0) {
                 pageRetire(heap);
@@ -1862,7 +1864,7 @@ final class MiMallocByteBufAllocator {
             int count = 1;
             int tail = head;
             int next;
-            MiByteBufAdapter delegate = (MiByteBufAdapter) segment.delegate;
+            MiByteBufAdapter delegate = (MiByteBufAdapter) this.delegate;
             while ((next = delegate._getInt(tail)) != -1 && count <= maxCount) {
                 count++;
                 tail = next;
@@ -2237,7 +2239,7 @@ final class MiMallocByteBufAllocator {
                 }
                 AbstractByteBuf delegate = page.delegate;
                 page.freeList = ((MiByteBufAdapter) delegate)._getInt(block);
-                byteBuf.init(page, block, size, maxCapacity, isReAlloc, delegate, allocType);
+                byteBuf.init(page, block, size, maxCapacity, isReAlloc, delegate, chunkHasArray, chunkHasMemoryAddress);
                 page.usedBlocks++;
                 return byteBuf;
             }
@@ -2281,7 +2283,7 @@ final class MiMallocByteBufAllocator {
         }
         AbstractByteBuf delegate =  page.delegate;
         page.freeList = ((MiByteBufAdapter) delegate)._getInt(block);
-        byteBuf.init(page, block, size, maxCapacity, isReAlloc, delegate, allocType);
+        byteBuf.init(page, block, size, maxCapacity, isReAlloc, delegate, chunkHasArray, chunkHasMemoryAddress);
         page.usedBlocks++;
         // Move page to the full queue.
         if (!page.isHuge && page.reservedBlocks == page.usedBlocks) {
@@ -2313,7 +2315,7 @@ final class MiMallocByteBufAllocator {
         }
         AbstractByteBuf delegate =  page.delegate;
         page.freeList = ((MiByteBufAdapter) delegate)._getInt(block);
-        buf.init(page, block, size, maxCapacity, isReAlloc, delegate, allocType);
+        buf.init(page, block, size, maxCapacity, isReAlloc, delegate, chunkHasArray, chunkHasMemoryAddress);
         page.usedBlocks++;
         return buf;
     }
@@ -2408,6 +2410,10 @@ final class MiMallocByteBufAllocator {
          * @return The buffer that represents the chunk memory.
          */
         AbstractByteBuf allocate(int initialCapacity, int maxCapacity);
+
+        boolean chunkHasArray();
+
+        boolean chunkHasMemoryAddress();
     }
 
     static final class MiByteBuf extends AbstractReferenceCountedByteBuf {
@@ -2425,7 +2431,7 @@ final class MiMallocByteBufAllocator {
         }
 
         void init(Page page, int block, int length, int maxCapacity, boolean isReAlloc,
-                  AbstractByteBuf delegate, AllocType allocType) {
+                  AbstractByteBuf delegate, boolean hasArray, boolean hasMemoryAddress) {
             assert page != null;
             assert page.blockSize > 1;
             assert block > -1;
@@ -2442,9 +2448,9 @@ final class MiMallocByteBufAllocator {
             maxCapacity(maxCapacity);
             this.rootParent = delegate;
             this.tmpNioBuf = null;
-            this.hasArray = allocType == AllocType.HEAP;
+            this.hasArray = hasArray;
             assert hasArray == delegate.hasArray();
-            this.hasMemoryAddress = !hasArray && rootParent.hasMemoryAddress();
+            this.hasMemoryAddress = hasMemoryAddress;
             assert hasMemoryAddress == delegate.hasMemoryAddress();
         }
 

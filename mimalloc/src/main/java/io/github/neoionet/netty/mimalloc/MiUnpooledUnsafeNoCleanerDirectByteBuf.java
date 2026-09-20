@@ -26,7 +26,7 @@ import java.nio.ByteBuffer;
  * This is a modified portion of `io.netty.buffer.UnpooledUnsafeNoCleanerDirectByteBuf`
  * from the <a href="https://github.com/netty/netty">netty</a> project.
  */
-class MiUnpooledUnsafeNoCleanerDirectByteBuf extends UnpooledUnsafeDirectByteBuf implements MiByteBufAdapter {
+final class MiUnpooledUnsafeNoCleanerDirectByteBuf extends UnpooledUnsafeDirectByteBuf implements MiByteBufAdapter {
 
     MiUnpooledUnsafeNoCleanerDirectByteBuf(ByteBufAllocator alloc, int initialCapacity, int maxCapacity) {
         super(alloc, initialCapacity, maxCapacity);

@@ -5,7 +5,7 @@ import io.netty.util.internal.CleanableDirectBuffer;
 import io.netty.util.internal.PlatformDependent;
 import io.netty.buffer.UnpooledDirectByteBuf;
 
-class MiUnpooledDirectByteBuf extends UnpooledDirectByteBuf implements MiByteBufAdapter {
+final class MiUnpooledDirectByteBuf extends UnpooledDirectByteBuf implements MiByteBufAdapter {
 
     MiUnpooledDirectByteBuf(ByteBufAllocator alloc, int initialCapacity, int maxCapacity) {
         // Netty's constructor that permits expensive clean is package-private, so start with an empty buffer

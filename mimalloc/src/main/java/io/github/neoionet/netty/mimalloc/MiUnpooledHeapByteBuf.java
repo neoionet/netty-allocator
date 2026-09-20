@@ -3,7 +3,7 @@ package io.github.neoionet.netty.mimalloc;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.UnpooledHeapByteBuf;
 
-class MiUnpooledHeapByteBuf extends UnpooledHeapByteBuf implements MiByteBufAdapter {
+final class MiUnpooledHeapByteBuf extends UnpooledHeapByteBuf implements MiByteBufAdapter {
 
     MiUnpooledHeapByteBuf(ByteBufAllocator alloc, int initialCapacity, int maxCapacity) {
         super(alloc, initialCapacity, maxCapacity);
