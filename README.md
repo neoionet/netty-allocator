@@ -111,7 +111,7 @@ b.group(group)
     *   **Allowed Values(case-insensitive):** `auto`, `tl`, `shared`
     *   **Description:** Determines the heap strategy. 
     * * `auto`: **EventLoop threads use thread-local heaps, non-EventLoop threads use shared heaps**. 
-    * * `tl`: **Force all threads to use thread-local heaps**. 
+    * * `tl`: **Force all threads to use thread-local heaps. NOTE: If you forcefully use `tl` for non-eventLoop thread, it will not do automatically cleanup when the thread exits**.
     * * `shared`: **Force all threads to use shared heaps**.
     *   **Default value:** `auto`
 
