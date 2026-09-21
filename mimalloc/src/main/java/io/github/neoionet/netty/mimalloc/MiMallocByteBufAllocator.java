@@ -603,10 +603,8 @@ final class MiMallocByteBufAllocator {
 
         private Page createHugePage(int size) {
             // Allocate the segment.
-            AbstractByteBuf buf = allocator.newChunk(size);
-            if (buf == null) {
-                return null; // Signal OOM
-            }
+            AbstractByteBuf buf = allocator.newChunk(size, false);
+            assert buf != null;
             // huge segment only needs 1 slice.
             Segment segment = new Segment(allocator, size, 1, SEGMENT_HUGE, buf, this);
             // Allocate a huge page which spans the entire segment.
@@ -1192,7 +1190,7 @@ final class MiMallocByteBufAllocator {
             if ((segment = reservedNormalSegmentDeque.pollFirst()) == null) {
                 this.coldReservedSegmentCount = 0;
                 int segmentSizeInBytesParam = allocator.segmentSizeInBytesParam;
-                AbstractByteBuf chunk = allocator.newChunk(segmentSizeInBytesParam);
+                AbstractByteBuf chunk = allocator.newChunk(segmentSizeInBytesParam, true);
                 if (chunk == null) {
                     return null; // Signal OOM
                 }
@@ -1211,7 +1209,7 @@ final class MiMallocByteBufAllocator {
         private Page segmentsHugePageAlloc(int required) {
             int segmentSize = alignUp(required, SEGMENT_SLICE_SIZE);
             // Allocate the segment.
-            AbstractByteBuf buf = allocator.newChunk(segmentSize);
+            AbstractByteBuf buf = allocator.newChunk(segmentSize, true);
             if (buf == null) {
                 return null; // Signal OOM
             }
@@ -1911,14 +1909,27 @@ final class MiMallocByteBufAllocator {
         }
     }
 
-    private AbstractByteBuf newChunk(int size) {
+    /**
+     * Allocates a chunk buffer.
+     *
+     * @param returnNullOnOom when {@code true}, an {@link OutOfMemoryError} is captured into
+     *        {@link #lastOutOfMemoryError} and {@code null} is returned instead of being thrown.
+     *        The caller must then read {@code lastOutOfMemoryError} within the same critical
+     *        section (the owning heap's lock, or a thread-local heap), because the field is
+     *        plain and is overwritten by the next failing allocation on any heap.
+     *        When {@code false}, the error propagates and the field is left untouched.
+     */
+    private AbstractByteBuf newChunk(int size, boolean returnNullOnOom) {
         try {
             AbstractByteBuf buf = chunkAllocator.allocate(size, size);
             this.usedMemory.addAndGet(size);
             return buf;
         } catch (OutOfMemoryError e) {
-            lastOutOfMemoryError = e;
-            return null; // Signal OOM
+            if (returnNullOnOom) {
+                lastOutOfMemoryError = e;
+                return null; // Signal OOM
+            }
+            throw e;
         }
     }
 
@@ -2309,10 +2320,6 @@ final class MiMallocByteBufAllocator {
     private MiByteBuf allocateFallback(int size, int goodAllocSize, int maxCapacity, MiByteBuf buf,
                                        LocalHeap heap, boolean isReAlloc) {
         Page page = heap.createHugePage(goodAllocSize);
-        if (page == null) { // out of memory
-            assert lastOutOfMemoryError != null;
-            throw lastOutOfMemoryError;
-        }
         int block = page.freeList;
         assert block == 0;
         if (buf == null) {
