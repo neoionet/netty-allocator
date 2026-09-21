@@ -147,6 +147,7 @@ final class MiMallocByteBufAllocator {
     private final boolean chunkHasArray;
     private final boolean chunkHasMemoryAddress;
 
+    // Written by `newChunk(size, true)` and read by its caller within the same heap critical section.
     private OutOfMemoryError lastOutOfMemoryError;
 
     MiMallocByteBufAllocator(ChunkAllocator chunkAllocator, MiByteBufAllocator.Builder builder, AllocType allocType) {
