@@ -149,7 +149,7 @@ public class ByteBufAllocatorAllocPatternBenchmark {
         private ByteBufAllocator allocator;
         private boolean enableReadWrite;
         @Setup
-        public void setup(ByteBufAllocatorAllocPatternBenchmark benchmark) {
+        public void setup(ByteBufAllocatorAllocPatternBenchmark benchmark, BenchmarkParams params) {
             this.allocator = benchmark.allocator;
             this.enableReadWrite = benchmark.enableReadWrite;
             releaseIndexes = new int[benchmark.MAX_LIVE_BUFFERS];
@@ -173,6 +173,21 @@ public class ByteBufAllocatorAllocPatternBenchmark {
             nextReleaseIndex = 0;
             nextSizeIndex = 0;
             buffers = new ByteBuf[benchmark.MAX_LIVE_BUFFERS];
+            // Fill the live set here, in slot order. Filled lazily by the benchmark method, the n-th operation creates
+            // the n-th buffer object and stores it in slot releaseIndexes[n], so every later pass releases the buffer
+            // objects in the order they were created: a sequential walk through memory that the hardware prefetcher
+            // hides, until the first young GC copies them in slot order and the walk becomes random. The score then
+            // depends on when that GC happens, i.e. on how much garbage the allocator under test produces.
+            boolean direct = params.getBenchmark().endsWith("directAllocation");
+            for (int i = 0; i < buffers.length; i++) {
+                int size = sizes[getNextSizeIndex()];
+                ByteBuf buf = direct ? allocateDirect(allocator, size) : allocateHeap(allocator, size);
+                if (enableReadWrite) {
+                    buf.writeByte(size);
+                }
+                buffers[i] = buf;
+            }
+            nextSizeIndex = 0;
         }
 
         private int getNextReleaseIndex() {
