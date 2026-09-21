@@ -2562,14 +2562,14 @@ final class MiMallocByteBufAllocator {
         @Override
         public ByteBuffer internalNioBuffer(int index, int length) {
             checkIndex(index, length);
-            return (ByteBuffer) internalNioBuffer().position(index).limit(index + length);
+            return internalNioBuffer().position(index).limit(index + length);
         }
 
         private ByteBuffer internalNioBuffer() {
             if (tmpNioBuf == null) {
                 tmpNioBuf = rootParent.nioBuffer(adjustment, maxFastCapacity);
             }
-            return (ByteBuffer) tmpNioBuf.clear();
+            return tmpNioBuf.clear();
         }
 
         @Override
@@ -2719,7 +2719,7 @@ final class MiMallocByteBufAllocator {
                 ByteBuffer dstBuffer = root.internalNioBuffer(0, root.capacity());
                 PlatformDependent.absolutePut(dstBuffer, idx(index), src, srcIndex, length);
             } else {
-                ByteBuffer tmp = (ByteBuffer) internalNioBuffer().clear().position(index);
+                ByteBuffer tmp = internalNioBuffer().clear().position(index);
                 tmp.put(src, srcIndex, length);
             }
             return this;
