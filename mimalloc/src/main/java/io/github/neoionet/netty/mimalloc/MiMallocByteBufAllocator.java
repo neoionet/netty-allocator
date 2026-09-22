@@ -147,9 +147,6 @@ final class MiMallocByteBufAllocator {
     private final boolean chunkHasArray;
     private final boolean chunkHasMemoryAddress;
 
-    // Written by `newChunk(size, true)` and read by its caller within the same heap critical section.
-    private OutOfMemoryError lastOutOfMemoryError;
-
     MiMallocByteBufAllocator(ChunkAllocator chunkAllocator, MiByteBufAllocator.Builder builder, AllocType allocType) {
         this.chunkAllocator = chunkAllocator;
         this.chunkHasArray = chunkAllocator.chunkHasArray();
@@ -361,6 +358,8 @@ final class MiMallocByteBufAllocator {
         private final ArrayDequeBounded<MiByteBuf> miBufLocalDeque;
         private final Queue<MiByteBuf> miBufCrossThreadsQueue;
         private final Queue<DelayedBlock> delayedBlockDeque;
+        // Written by `newChunk(size, true)` and read by its caller within the same heap critical section.
+        private OutOfMemoryError lastOutOfMemoryError;
 
         LocalHeap(MiMallocByteBufAllocator allocator, StampedLock sharedLock) {
             this.segmentTld = new SegmentTld();
@@ -604,7 +603,7 @@ final class MiMallocByteBufAllocator {
 
         private Page createHugePage(int size) {
             // Allocate the segment.
-            AbstractByteBuf buf = allocator.newChunk(size, false);
+            AbstractByteBuf buf = allocator.newChunk(size, false, this);
             assert buf != null;
             // huge segment only needs 1 slice.
             Segment segment = new Segment(allocator, size, 1, SEGMENT_HUGE, buf, this);
@@ -1191,7 +1190,7 @@ final class MiMallocByteBufAllocator {
             if ((segment = reservedNormalSegmentDeque.pollFirst()) == null) {
                 this.coldReservedSegmentCount = 0;
                 int segmentSizeInBytesParam = allocator.segmentSizeInBytesParam;
-                AbstractByteBuf chunk = allocator.newChunk(segmentSizeInBytesParam, true);
+                AbstractByteBuf chunk = allocator.newChunk(segmentSizeInBytesParam, true, this);
                 if (chunk == null) {
                     return null; // Signal OOM
                 }
@@ -1210,7 +1209,7 @@ final class MiMallocByteBufAllocator {
         private Page segmentsHugePageAlloc(int required) {
             int segmentSize = alignUp(required, SEGMENT_SLICE_SIZE);
             // Allocate the segment.
-            AbstractByteBuf buf = allocator.newChunk(segmentSize, true);
+            AbstractByteBuf buf = allocator.newChunk(segmentSize, true, this);
             if (buf == null) {
                 return null; // Signal OOM
             }
@@ -1914,22 +1913,23 @@ final class MiMallocByteBufAllocator {
      * Allocates a chunk buffer.
      *
      * @param returnNullOnOom when {@code true}, an {@link OutOfMemoryError} is captured into
-     *        {@link #lastOutOfMemoryError} and {@code null} is returned instead of being thrown.
-     *        The caller must then read {@code lastOutOfMemoryError} within the same critical
-     *        section (the owning heap's lock, or a thread-local heap), because the field is
-     *        plain and is overwritten by the next failing allocation on any heap.
+     *        {@link LocalHeap#lastOutOfMemoryError} of the given {@code heap} and {@code null} is returned
+     *        instead of being thrown. The field is plain: it is written and then read by the caller within
+     *        the same heap critical section (the shared heap's lock, or the owning thread of a thread-local heap).
      *        When {@code false}, the error propagates and the field is left untouched.
+     * @param heap the heap performing the allocation.
      */
-    private AbstractByteBuf newChunk(int size, boolean returnNullOnOom) {
+    private AbstractByteBuf newChunk(int size, boolean returnNullOnOom, LocalHeap heap) {
         try {
             AbstractByteBuf buf = chunkAllocator.allocate(size, size);
             this.usedMemory.addAndGet(size);
             return buf;
         } catch (OutOfMemoryError e) {
             if (returnNullOnOom) {
-                lastOutOfMemoryError = e;
+                heap.lastOutOfMemoryError = e;
                 return null; // Signal OOM
             }
+            // Do not touch `heap`: this path may run on a shared heap without holding its lock.
             throw e;
         }
     }
@@ -2284,8 +2284,10 @@ final class MiMallocByteBufAllocator {
             page = heap.findPage(size);
         }
         if (page == null) { // out of memory
-            assert lastOutOfMemoryError != null;
-            throw lastOutOfMemoryError;
+            OutOfMemoryError e = heap.lastOutOfMemoryError;
+            assert e != null;
+            heap.lastOutOfMemoryError = null;
+            throw e;
         }
         int block = page.freeList;
         assert block > -1;
