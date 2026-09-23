@@ -2750,6 +2750,9 @@ final class MiMallocByteBufAllocator {
         public ByteBuf setBytes(int index, ByteBuffer src) {
             int length = src.remaining();
             checkIndex(index, length);
+            if (src == tmpNioBuf) {
+                src = src.duplicate();
+            }
             ByteBuffer tmp = internalNioBuffer();
             if (PlatformDependent.javaVersion() >= 16) {
                 int offset = src.position();
