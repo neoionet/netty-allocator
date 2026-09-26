@@ -2721,7 +2721,7 @@ final class MiMallocByteBufAllocator {
                 ByteBuffer dstBuffer = root.internalNioBuffer(0, root.capacity());
                 PlatformDependent.absolutePut(dstBuffer, idx(index), src, srcIndex, length);
             } else {
-                ByteBuffer tmp = (ByteBuffer) internalNioBuffer().clear().position(index);
+                ByteBuffer tmp = (ByteBuffer) internalNioBuffer().position(index);
                 tmp.put(src, srcIndex, length);
             }
             return this;
@@ -2781,7 +2781,7 @@ final class MiMallocByteBufAllocator {
                 throws IOException {
             checkIndex(index, length);
             ByteBuffer buf = internalNioBuffer().duplicate();
-            buf.clear().position(index).limit(index + length);
+            buf.position(index).limit(index + length);
             return out.write(buf);
         }
 
@@ -2790,7 +2790,7 @@ final class MiMallocByteBufAllocator {
                 throws IOException {
             checkIndex(index, length);
             ByteBuffer buf = internalNioBuffer().duplicate();
-            buf.clear().position(index).limit(index + length);
+            buf.position(index).limit(index + length);
             return out.write(buf, position);
         }
 
