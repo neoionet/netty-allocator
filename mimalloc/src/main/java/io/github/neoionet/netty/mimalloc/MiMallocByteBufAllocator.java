@@ -27,6 +27,7 @@ import java.util.Arrays;
 import java.util.Locale;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -146,6 +147,9 @@ final class MiMallocByteBufAllocator {
 
     private final boolean chunkHasArray;
     private final boolean chunkHasMemoryAddress;
+
+    // 63 * 64 = 4032: covers all 64 cache-line positions within a 4 KiB page.
+    private static final int PAGE_MAX_START_OFFSET_CACHE_LINES = 63;
 
     MiMallocByteBufAllocator(ChunkAllocator chunkAllocator, MiByteBufAllocator.Builder builder, AllocType allocType) {
         this.chunkAllocator = chunkAllocator;
@@ -612,7 +616,7 @@ final class MiMallocByteBufAllocator {
             // A fresh page was found, initialize it.
             page.reservedBlocks = 1;
             page.retireExpire = 0;
-            page.freeList = page.adjustment;
+            page.freeList = page.blockBase();
             ((MiByteBufAdapter) buf)._setInt(page.freeList, -1);
             page.capacityBlocks = 1;
             return page;
@@ -768,14 +772,15 @@ final class MiMallocByteBufAllocator {
 
         private void pageFreeListExtend(Page page, int bSize, int extend) {
             assert extend > 0;
-            int start = page.adjustment + page.capacityBlocks * bSize;
+            int base = page.blockBase();
+            int start = base + page.capacityBlocks * bSize;
             // Initialize a sequential free list.
             int last;
             int count = 1; // For assertion
             if (extend == 1) {
                 last = start;
             } else {
-                last = page.adjustment + (page.capacityBlocks + extend - 1) * bSize;
+                last = base + (page.capacityBlocks + extend - 1) * bSize;
                 assert count++ > 0; // Increase `count` if assertion enabled
             }
             int block = start;
@@ -831,9 +836,10 @@ final class MiMallocByteBufAllocator {
             // Set fields.
             if (page.isHuge) {
                 assert page.adjustment == 0 : page.adjustment;
+                assert page.startColor == 0 : page.startColor;
                 page.reservedBlocks = 1;
                 page.retireExpire = 0;
-                page.freeList = page.adjustment;
+                page.freeList = page.blockBase();
                 ((MiByteBufAdapter) page.delegate)._setInt(page.freeList, -1);
                 page.capacityBlocks = 1;
             } else {
@@ -841,9 +847,14 @@ final class MiMallocByteBufAllocator {
                     page.threadFreeList.set(INIT_EMPTY_THREAD_FREELIST);
                 }
                 page.blockSize = blockSize;
-                int pageSize = page.sliceCount * SEGMENT_SLICE_SIZE;
-                page.reservedBlocks = (short) (pageSize / blockSize);
                 page.retireExpire = DEFAULT_PAGE_RETIRE_EXPIRE_INIT;
+                int pageSize = page.sliceCount * SEGMENT_SLICE_SIZE;
+                int reservedBlocks = pageSize / blockSize;
+                page.reservedBlocks = (short) reservedBlocks;
+                int remainder = pageSize - reservedBlocks * blockSize;
+                int cacheLines = Math.min(remainder >>> 6, PAGE_MAX_START_OFFSET_CACHE_LINES);
+                page.startColor = cacheLines > 0 ? (ThreadLocalRandom.current().nextInt(cacheLines + 1) << 6) : 0;
+                assert page.startColor <= remainder : "Page color must fit in the page tail";
                 pageExtendFree(page);
             }
         }
@@ -1708,6 +1719,18 @@ final class MiMallocByteBufAllocator {
         int blockSize;
         boolean isHuge; // `true` if the page is in a huge segment (segment.kind == SEGMENT_HUGE)
 
+        // Offset the block area by a random multiple of the cache line size, taken from the page
+        // tail that is too small to hold another block, so that pages of the same size class do
+        // not place their blocks at the same low 12 address bits.
+        // Unlike a per-allocation offset, this keeps the stride between consecutive blocks of a
+        // page constant, so hardware prefetching only loses its stream at page boundaries rather
+        // than at every buffer.
+        // Eases 4K-aliasing and improves cache associativity.
+        // See:
+        // https://github.com/Kobzol/hardware-effects/blob/master/4k-aliasing/README.md
+        // https://en.algorithmica.org/hpc/cpu-cache/associativity/
+        int startColor;
+
         // Empty Page Constructor
         Page() {
             this(null, null, null);
@@ -1717,6 +1740,11 @@ final class MiMallocByteBufAllocator {
             this.segment = segment;
             this.delegate = delegate;
             this.allocator = allocator;
+        }
+
+        /** The offset of the first block: the page's own offset in the segment, plus its color. */
+        private int blockBase() {
+            return adjustment + startColor;
         }
 
         static long tf(int delay, int block) {
@@ -1833,13 +1861,13 @@ final class MiMallocByteBufAllocator {
 
         // Validate that `block` is a block start inside this page's initialized area.
         private void checkFreeListBlock(int block) {
-            int off = block - this.adjustment;
+            int off = block - blockBase();
             // Unsigned compare covers both `block < adjustment` and `block >= end` in one check.
             if (Integer.compareUnsigned(off, this.capacityBlocks * this.blockSize) >= 0
                     || off % this.blockSize != 0) {
-                String errMsg = String.format(
-                        "corrupted free list block: [%d], adjustment: [%d], capacityBlocks: [%d], blockSize: [%d]",
-                        block, this.adjustment, this.capacityBlocks, this.blockSize);
+                String errMsg = String.format("corrupted free list block: " +
+                                "[%d], adjustment: [%d], capacityBlocks: [%d], blockSize: [%d], startColor: [%d]",
+                        block, this.adjustment, this.capacityBlocks, this.blockSize, this.startColor);
                 PlatformDependent.throwException(new IllegalStateException(errMsg));
             }
         }
@@ -2244,11 +2272,12 @@ final class MiMallocByteBufAllocator {
             // Fast path
             int block = page.freeList;
             if (block != -1) {
-                assert block >= page.adjustment
-                        && block < page.adjustment + page.capacityBlocks * page.blockSize
-                        && (block - page.adjustment) % page.blockSize == 0
+                assert block >= page.blockBase()
+                        && block < page.blockBase() + page.capacityBlocks * page.blockSize
+                        && (block - page.blockBase()) % page.blockSize == 0
                         : "bad block: " + block + ", page.adjustment=" + page.adjustment
-                        + ", capacityBlocks=" + page.capacityBlocks + ", blockSize=" + page.blockSize;
+                        + ", blockBase=" + page.blockBase() + ", capacityBlocks=" + page.capacityBlocks
+                        + ", blockSize=" + page.blockSize;
                 if (byteBuf == null) {
                     byteBuf = heap.getMiByteBuf();
                 }
@@ -2291,11 +2320,11 @@ final class MiMallocByteBufAllocator {
         }
         int block = page.freeList;
         assert block > -1;
-        assert block >= page.adjustment
-                && block < page.adjustment + page.capacityBlocks * page.blockSize
-                && (block - page.adjustment) % page.blockSize == 0
+        assert block >= page.blockBase() && block < page.blockBase() + page.capacityBlocks * page.blockSize
+                && (block - page.blockBase()) % page.blockSize == 0
                 : "allocateGeneric:bad block: " + block + ", page.adjustment=" + page.adjustment
-                + ", capacityBlocks=" + page.capacityBlocks + ", blockSize=" + page.blockSize;
+                + ", blockBase=" + page.blockBase() + ", capacityBlocks=" + page.capacityBlocks
+                + ", blockSize=" + page.blockSize;
         if (byteBuf == null) {
             byteBuf = heap.getMiByteBuf();
         }
