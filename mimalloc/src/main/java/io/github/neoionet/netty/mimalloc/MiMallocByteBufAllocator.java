@@ -27,7 +27,6 @@ import java.util.Arrays;
 import java.util.Locale;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedDeque;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -147,13 +146,6 @@ final class MiMallocByteBufAllocator {
 
     private final boolean chunkHasArray;
     private final boolean chunkHasMemoryAddress;
-
-    // From 4 KiB up, gcd(blockSize, 4096) == 4096 for every size class, so all blocks of a
-    // page share their low 12 address bits. Below it, they already spread across them.
-    private static final int SIZE_4K = 4 * KiB;
-    private static final int CACHE_LINE_SIZE = 64;
-    // 63 * 64 = 4032: covers all 64 cache-line positions within a 4 KiB page.
-    private static final int PAGE_MAX_START_OFFSET_CACHE_LINES = 63;
 
     MiMallocByteBufAllocator(ChunkAllocator chunkAllocator, MiByteBufAllocator.Builder builder, AllocType allocType) {
         this.chunkAllocator = chunkAllocator;
@@ -2262,8 +2254,7 @@ final class MiMallocByteBufAllocator {
                 }
                 AbstractByteBuf delegate = page.delegate;
                 page.freeList = ((MiByteBufAdapter) delegate)._getInt(block);
-                byteBuf.init(page, block, size, maxCapacity, isReAlloc, delegate,
-                        chunkHasArray, chunkHasMemoryAddress, 0);
+                byteBuf.init(page, block, size, maxCapacity, isReAlloc, delegate, chunkHasArray, chunkHasMemoryAddress);
                 page.usedBlocks++;
                 return byteBuf;
             }
@@ -2310,9 +2301,7 @@ final class MiMallocByteBufAllocator {
         }
         AbstractByteBuf delegate =  page.delegate;
         page.freeList = ((MiByteBufAdapter) delegate)._getInt(block);
-        int startOffset = getBlockStartOffset(page.blockSize, size);
-        byteBuf.init(page, block, size, maxCapacity, isReAlloc, delegate,
-                chunkHasArray, chunkHasMemoryAddress, startOffset);
+        byteBuf.init(page, block, size, maxCapacity, isReAlloc, delegate, chunkHasArray, chunkHasMemoryAddress);
         page.usedBlocks++;
         // Move page to the full queue.
         if (!page.isHuge && page.reservedBlocks == page.usedBlocks) {
@@ -2341,27 +2330,9 @@ final class MiMallocByteBufAllocator {
         }
         AbstractByteBuf delegate =  page.delegate;
         page.freeList = ((MiByteBufAdapter) delegate)._getInt(block);
-        int startOffset = getBlockStartOffset(page.blockSize, size);
-        buf.init(page, block, size, maxCapacity, isReAlloc, delegate,
-                chunkHasArray, chunkHasMemoryAddress, startOffset);
+        buf.init(page, block, size, maxCapacity, isReAlloc, delegate, chunkHasArray, chunkHasMemoryAddress);
         page.usedBlocks++;
         return buf;
-    }
-
-    // Ease 4K-aliasing, also improve cache associativity. See:
-    // https://github.com/Kobzol/hardware-effects/blob/master/4k-aliasing/README.md
-    // https://en.algorithmica.org/hpc/cpu-cache/associativity/
-    private static int getBlockStartOffset(int blockSize, int size) {
-        if (blockSize < SIZE_4K) {
-            return 0;
-        }
-        int extraSpare = blockSize - size;
-        if (extraSpare < CACHE_LINE_SIZE) {
-            return 0;
-        }
-        // 1..63
-        int steps = Math.min(extraSpare >>> 6, PAGE_MAX_START_OFFSET_CACHE_LINES);
-        return ThreadLocalRandom.current().nextInt(steps + 1) << 6;
     }
 
     private static int pageBin(Page page) {
@@ -2465,7 +2436,6 @@ final class MiMallocByteBufAllocator {
         private int maxFastCapacity;
         private AbstractByteBuf rootParent;
         private int adjustment;
-        private int block;
         private ByteBuffer tmpNioBuf;
         private boolean hasArray;
         private boolean hasMemoryAddress;
@@ -2476,7 +2446,7 @@ final class MiMallocByteBufAllocator {
         }
 
         void init(Page page, int block, int length, int maxCapacity, boolean isReAlloc,
-                  AbstractByteBuf delegate, boolean hasArray, boolean hasMemoryAddress, int startOffset) {
+                  AbstractByteBuf delegate, boolean hasArray, boolean hasMemoryAddress) {
             assert page != null;
             assert page.blockSize > 1;
             assert block > -1;
@@ -2488,9 +2458,8 @@ final class MiMallocByteBufAllocator {
             }
             this.page =  page;
             this.length = length;
-            this.maxFastCapacity = page.blockSize - startOffset;
-            this.block = block;
-            this.adjustment = block + startOffset;
+            this.maxFastCapacity = page.blockSize;
+            this.adjustment = block;
             maxCapacity(maxCapacity);
             this.rootParent = delegate;
             this.tmpNioBuf = null;
@@ -2507,7 +2476,7 @@ final class MiMallocByteBufAllocator {
             this.tmpNioBuf = null;
             Page page = this.page;
             this.page = null;
-            page.allocator.free(page, this.block, this);
+            page.allocator.free(page, this.adjustment, this);
         }
 
         public ByteBuf capacity(int newCapacity) {
@@ -2524,7 +2493,7 @@ final class MiMallocByteBufAllocator {
             // Reallocation required.
             MiMallocByteBufAllocator allocator = this.page.allocator;
             Page oldPage = this.page;
-            int oldBlock = this.block;
+            int oldBlock = this.adjustment;
             int baseOldRootIndex = adjustment;
             int oldCapacity = length;
             AbstractByteBuf oldRoot = rootParent;
@@ -2952,5 +2921,4 @@ final class MiMallocByteBufAllocator {
             return index + adjustment;
         }
     }
-
 }
