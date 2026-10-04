@@ -150,6 +150,8 @@ final class MiMallocByteBufAllocator {
 
     // 63 * 64 = 4032: covers all 64 cache-line positions within a 4 KiB page.
     private static final int PAGE_MAX_START_OFFSET_CACHE_LINES = 63;
+    // 8 lines (512 bytes).
+    private static final int PAGE_MIN_START_OFFSET_CACHE_LINES = 8;
     // Only sacrifice a block for coloring when the page holds at least this many, capping the
     // memory cost at 1/16 = 6.25%.
     private static final int MIN_BLOCKS_TO_COLOR = 16;
@@ -853,29 +855,38 @@ final class MiMallocByteBufAllocator {
                 page.blockSize = blockSize;
                 page.retireExpire = DEFAULT_PAGE_RETIRE_EXPIRE_INIT;
                 int pageSize = page.sliceCount * SEGMENT_SLICE_SIZE;
-                int reservedBlocks = pageSize / blockSize;
-                int remainder = pageSize - reservedBlocks * blockSize;
-                // When the block size divides the page size exactly, no tail is left to take a color from.
-                // Giving up one block is worth it for the larger classes: the page starts on a 4 KiB boundary,
-                // so with a block size of 4 KiB or a multiple of it, every block in the page starts on a 4 KiB
-                // boundary too (2 KiB leaves two possible positions), putting the whole page on the same few
-                // cache sets - the worse case for both 4K aliasing and cache set conflicts.
-                // Smaller sizes already spread over many sets within one page.
-                // `MIN_BLOCKS_TO_COLOR` caps the cost of the sacrifice at 1/MIN_BLOCKS_TO_COLOR of the page.
-                if (remainder == 0
-                        && blockSize >= SIZE_2_KIB
-                        && reservedBlocks >= MIN_BLOCKS_TO_COLOR) {
-                    reservedBlocks--;
-                    remainder = blockSize;
-                }
-                page.reservedBlocks = (short) reservedBlocks;
-                int cacheLines = Math.min(remainder >>> 6, PAGE_MAX_START_OFFSET_CACHE_LINES);
-                page.startColor = cacheLines > 0 ? (ThreadLocalRandom.current().nextInt(cacheLines + 1) << 6) : 0;
-                assert page.startColor + reservedBlocks * blockSize <= pageSize
+                int blocks = pageSize / blockSize;
+                int cacheLines = startOffsetCacheLines(blockSize, pageSize, blocks);
+                page.startColor = cacheLines > 0 ? ThreadLocalRandom.current().nextInt(cacheLines + 1) << 6 : 0;
+                // Whatever the shift consumes is simply not available to blocks, so a shift reaching past
+                // the page tail costs blocks instead of overflowing the page.
+                page.reservedBlocks = (short) ((pageSize - page.startColor) / blockSize);
+                assert (page.startColor & 63) == 0 : page.startColor;
+                assert page.reservedBlocks > 0
+                        : "No block left after coloring: startColor=" + page.startColor
+                        + ", blockSize=" + blockSize + ", pageSize=" + pageSize;
+                assert page.startColor + page.reservedBlocks * blockSize <= pageSize
                         : "Colored block area overflows the page: startColor=" + page.startColor
-                        + ", reservedBlocks=" + reservedBlocks + ", blockSize=" + blockSize + ", pageSize=" + pageSize;
+                        + ", reservedBlocks=" + page.reservedBlocks + ", blockSize=" + blockSize
+                        + ", pageSize=" + pageSize;
                 pageExtendFree(page);
             }
+        }
+
+        private static int startOffsetCacheLines(int blockSize, int pageSize, int blocks) {
+            // Whatever the blocks leave at the end of the page is free to spend on the shift.
+            int cacheLines = (pageSize - blocks * blockSize) >>> 6;
+            if (blockSize < SIZE_2_KIB) {
+                // A few cache lines cost of the page, so give every page a range even
+                // when the blocks divide it exactly and leave no tail.
+                cacheLines = Math.max(cacheLines, PAGE_MIN_START_OFFSET_CACHE_LINES);
+            } else if (cacheLines == 0 && blocks >= MIN_BLOCKS_TO_COLOR) {
+                // From 2 KiB up a block is too large to give away by the byte, so give up a whole one -
+                // but only where the page holds enough blocks for that to stay cheap. Pages with fewer
+                // blocks, and the single-block pages of the large classes, get no shift at all.
+                cacheLines = blockSize >>> 6;
+            }
+            return Math.min(cacheLines, PAGE_MAX_START_OFFSET_CACHE_LINES);
         }
 
         private Page segmentPageAlloc(int blockSize) {
