@@ -150,6 +150,10 @@ final class MiMallocByteBufAllocator {
 
     // 63 * 64 = 4032: covers all 64 cache-line positions within a 4 KiB page.
     private static final int PAGE_MAX_START_OFFSET_CACHE_LINES = 63;
+    // Only sacrifice a block for coloring when the page holds at least this many, capping the
+    // memory cost at 1/16 = 6.25%.
+    private static final int MIN_BLOCKS_TO_COLOR = 16;
+    private static final int SIZE_2_KIB = 2 * KiB;
 
     MiMallocByteBufAllocator(ChunkAllocator chunkAllocator, MiByteBufAllocator.Builder builder, AllocType allocType) {
         this.chunkAllocator = chunkAllocator;
@@ -850,11 +854,26 @@ final class MiMallocByteBufAllocator {
                 page.retireExpire = DEFAULT_PAGE_RETIRE_EXPIRE_INIT;
                 int pageSize = page.sliceCount * SEGMENT_SLICE_SIZE;
                 int reservedBlocks = pageSize / blockSize;
-                page.reservedBlocks = (short) reservedBlocks;
                 int remainder = pageSize - reservedBlocks * blockSize;
+                // When the block size divides the page size exactly, no tail is left to take a color from.
+                // Giving up one block is worth it for the larger classes: the page starts on a 4 KiB boundary,
+                // so with a block size of 4 KiB or a multiple of it, every block in the page starts on a 4 KiB
+                // boundary too (2 KiB leaves two possible positions), putting the whole page on the same few
+                // cache sets - the worse case for both 4K aliasing and cache set conflicts.
+                // Smaller sizes already spread over many sets within one page.
+                // `MIN_BLOCKS_TO_COLOR` caps the cost of the sacrifice at 1/MIN_BLOCKS_TO_COLOR of the page.
+                if (remainder == 0
+                        && blockSize >= SIZE_2_KIB
+                        && reservedBlocks >= MIN_BLOCKS_TO_COLOR) {
+                    reservedBlocks--;
+                    remainder = blockSize;
+                }
+                page.reservedBlocks = (short) reservedBlocks;
                 int cacheLines = Math.min(remainder >>> 6, PAGE_MAX_START_OFFSET_CACHE_LINES);
                 page.startColor = cacheLines > 0 ? (ThreadLocalRandom.current().nextInt(cacheLines + 1) << 6) : 0;
-                assert page.startColor <= remainder : "Page color must fit in the page tail";
+                assert page.startColor + reservedBlocks * blockSize <= pageSize
+                        : "Colored block area overflows the page: startColor=" + page.startColor
+                        + ", reservedBlocks=" + reservedBlocks + ", blockSize=" + blockSize + ", pageSize=" + pageSize;
                 pageExtendFree(page);
             }
         }
@@ -1719,9 +1738,10 @@ final class MiMallocByteBufAllocator {
         int blockSize;
         boolean isHuge; // `true` if the page is in a huge segment (segment.kind == SEGMENT_HUGE)
 
-        // Offset the block area by a random multiple of the cache line size, taken from the page
-        // tail that is too small to hold another block, so that pages of the same size class do
-        // not place their blocks at the same low 12 address bits.
+        // Offset the block area by a random multiple of the cache line size, so that pages of the same
+        // size class do not place their blocks at the same low 12 address bits. The offset comes from
+        // the page tail left over after the blocks; for sizes that divide the page exactly, `pageInit`
+        // gives up one block to create that tail.
         // Unlike a per-allocation offset, this keeps the stride between consecutive blocks of a
         // page constant, so hardware prefetching only loses its stream at page boundaries rather
         // than at every buffer.
