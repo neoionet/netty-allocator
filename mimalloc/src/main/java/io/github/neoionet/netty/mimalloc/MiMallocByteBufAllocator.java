@@ -33,6 +33,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.StampedLock;
+
 import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.CollectType.ABANDON;
 import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.CollectType.FORCE;
 import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.CollectType.NORMAL;
@@ -95,6 +96,7 @@ final class MiMallocByteBufAllocator {
     private static final int MAX_PAGE_CANDIDATE_SEARCH = 5;
     private static final int MAX_FULL_PAGE_MOVE = 10;
 
+    private static final int[] EMPTY_CACHE = new int[0];
     private static final Page EMPTY_PAGE = new Page();
     // 4 KiB
     private static final int PAGE_MAX_EXTEND_SIZE = 4 * 1024;
@@ -156,6 +158,9 @@ final class MiMallocByteBufAllocator {
     // memory cost at 1/16 = 6.25%.
     private static final int MIN_BLOCKS_TO_COLOR = 16;
     private static final int SIZE_2_KIB = 2 * KiB;
+
+    private static final int FREE_LIST_CACHE_SIZE = 64;
+    private static final int FAST_ALLOC_QUOTA = 64;
 
     MiMallocByteBufAllocator(ChunkAllocator chunkAllocator, MiByteBufAllocator.Builder builder, AllocType allocType) {
         this.chunkAllocator = chunkAllocator;
@@ -370,6 +375,7 @@ final class MiMallocByteBufAllocator {
         private final Queue<DelayedBlock> delayedBlockDeque;
         // Written by `newChunk(size, true)` and read by its caller within the same heap critical section.
         private OutOfMemoryError lastOutOfMemoryError;
+        private final ArrayDequeBounded<int[]> cachePool;
 
         LocalHeap(MiMallocByteBufAllocator allocator, StampedLock sharedLock) {
             this.segmentTld = new SegmentTld();
@@ -381,6 +387,7 @@ final class MiMallocByteBufAllocator {
             this.miBufLocalDeque = new ArrayDequeBounded<>(1024);
             this.miBufCrossThreadsQueue = PlatformDependent.newFixedMpscQueue(1024);
             this.delayedBlockDeque = PlatformDependent.newFixedMpmcQueue(1024);
+            this.cachePool = new ArrayDequeBounded<>(1024);
             int maxReservedSegmentCount = Math.min(Math.max(1, 32 * MiB / allocator.segmentSizeInBytesParam), 8);
             this.reservedNormalSegmentDeque = new ArrayDequeBounded<>(maxReservedSegmentCount);
             this.pageQueues = new PageQueue[] {
@@ -744,7 +751,7 @@ final class MiMallocByteBufAllocator {
         // Extend the capacity (up to reserved) by initializing a free list.
         // We do at most `MAX_EXTEND` to avoid touching too much memory.
         private boolean pageExtendFree(Page page) {
-            if (page.freeList != -1) {
+            if (page.immediateAvailable()) {
                 return true;
             }
             if (page.capacityBlocks >= page.reservedBlocks) {
@@ -761,7 +768,7 @@ final class MiMallocByteBufAllocator {
                 extend = maxExtend;
             }
             pageFreeListExtend(page, bSize, extend);
-            page.capacityBlocks += (short) extend;
+            page.capacityBlocks += extend;
             return true;
         }
 
@@ -778,35 +785,28 @@ final class MiMallocByteBufAllocator {
 
         private void pageFreeListExtend(Page page, int bSize, int extend) {
             assert extend > 0;
-            int base = page.blockBase();
-            int start = base + page.capacityBlocks * bSize;
-            // Initialize a sequential free list.
-            int last;
-            int count = 1; // For assertion
-            if (extend == 1) {
-                last = start;
-            } else {
-                last = base + (page.capacityBlocks + extend - 1) * bSize;
-                assert count++ > 0; // Increase `count` if assertion enabled
+            int start = page.blockBase() + page.capacityBlocks * bSize;
+            // Fill the cache first; it is a LIFO stack, so push in reverse to pop the blocks in address order.
+            int[] cache = page.cache;
+            int top = page.cacheTop;
+            int cached = Math.min(extend, cache.length - 1 - top);
+            for (int i = cached - 1; i >= 0; i--) {
+                cache[++top] = start + i * bSize;
             }
-            int block = start;
+            page.cacheTop = top;
+            if (cached == extend) {
+                return;
+            }
+            // Link the rest into a sequential list and prepend it to the free list.
             MiByteBufAdapter delegate = (MiByteBufAdapter) page.delegate;
-            if (extend > 1) {
-                while (block < last - bSize) {
-                    int next = block + bSize;
-                    delegate._setInt(block, next);
-                    assert count++ > 0; // Increase `count` if assertion enabled
-                    assert next > block;
-                    block = next;
-                }
-                assert block != last;
-                delegate._setInt(block, last);
+            int head = start + cached * bSize;
+            int last = start + (extend - 1) * bSize;
+            for (int block = head; block < last; block += bSize) {
+                delegate._setInt(block, block + bSize);
             }
-            assert count == extend;
-            // Prepend to the free list.
             assert page.freeList == -1;
-            delegate._setInt(last, page.freeList);
-            page.freeList = start;
+            delegate._setInt(last, -1);
+            page.freeList = head;
         }
 
         // Get a fresh page to use.
@@ -839,6 +839,8 @@ final class MiMallocByteBufAllocator {
             assert Page.tfBlock(page.threadFreeList.get()) == -1 : page.threadFreeList.get();
             assert page.nextPage == null : page.nextPage;
             assert page.prevPage == null : page.prevPage;
+            assert page.cache == EMPTY_CACHE : page.cache.length;
+            assert page.cacheTop == -1 : page.cacheTop;
             // Set fields.
             if (page.isHuge) {
                 assert page.adjustment == 0 : page.adjustment;
@@ -860,7 +862,11 @@ final class MiMallocByteBufAllocator {
                 page.startColor = cacheLines > 0 ? ThreadLocalRandom.current().nextInt(cacheLines + 1) << 6 : 0;
                 // Whatever the shift consumes is simply not available to blocks, so a shift reaching past
                 // the page tail costs blocks instead of overflowing the page.
-                page.reservedBlocks = (short) ((pageSize - page.startColor) / blockSize);
+                page.reservedBlocks = (pageSize - page.startColor) / blockSize;
+                int[] cache = this.cachePool.pollFirst();
+                page.cache = cache != null ? cache : new int[FREE_LIST_CACHE_SIZE];
+                page.cacheTop = -1;
+                page.fastAllocQuota = FAST_ALLOC_QUOTA;
                 assert (page.startColor & 63) == 0 : page.startColor;
                 assert page.reservedBlocks > 0
                         : "No block left after coloring: startColor=" + page.startColor
@@ -1140,6 +1146,12 @@ final class MiMallocByteBufAllocator {
             page.blockSize = 1;
             page.capacityBlocks = 0;
             page.reservedBlocks = 0;
+            int[] cache = page.cache;
+            if (cache != EMPTY_CACHE) {
+                this.cachePool.offerFirst(cache);
+            }
+            page.cache = EMPTY_CACHE;
+            page.cacheTop = -1;
             page.freeList = -1;
             page.localFreeList = -1;
             page.isInFull = false;
@@ -1637,11 +1649,11 @@ final class MiMallocByteBufAllocator {
         private Page firstPage;
         private Page lastPage;
         private final int blockSize;
-        private final byte index;
+        private final int index;
 
         PageQueue(int blockWords, int index) {
             this.blockSize = blockWords * WORD_SIZE;
-            this.index = (byte) index;
+            this.index = index;
         }
     }
 
@@ -1654,15 +1666,15 @@ final class MiMallocByteBufAllocator {
         final Segment segment;
         final AbstractByteBuf delegate;
         final MiMallocByteBufAllocator allocator;
-        short capacityBlocks; // number of blocks created.
-        short reservedBlocks; // number of blocks reserved.
+        int capacityBlocks; // number of blocks created.
+        int reservedBlocks; // number of blocks reserved.
         boolean isInFull;
         // Expiration count for retired blocks.
         // retireExpire = 0 means disable retirement.
-        byte retireExpire = DEFAULT_PAGE_RETIRE_EXPIRE_INIT;
+        int retireExpire = DEFAULT_PAGE_RETIRE_EXPIRE_INIT;
         int freeList = -1;
         int localFreeList = -1;
-        short usedBlocks; // number of blocks in use (including blocks in `thread-free list`)
+        int usedBlocks; // number of blocks in use (including blocks in `thread-free list`)
         /**
          * <pre>
          * The flag is used to control how blocks are freed in a page.
@@ -1761,6 +1773,9 @@ final class MiMallocByteBufAllocator {
         // https://github.com/Kobzol/hardware-effects/blob/master/4k-aliasing/README.md
         // https://en.algorithmica.org/hpc/cpu-cache/associativity/
         int startColor;
+        int[] cache = EMPTY_CACHE;
+        int cacheTop = -1;
+        int fastAllocQuota;
 
         // Empty Page Constructor
         Page() {
@@ -1771,6 +1786,34 @@ final class MiMallocByteBufAllocator {
             this.segment = segment;
             this.delegate = delegate;
             this.allocator = allocator;
+        }
+
+        boolean cacheIsEmpty() {
+            return cacheTop < 0;
+        }
+
+        int cacheRemaining() {
+            return cache.length - 1 - cacheTop;
+        }
+
+        int cachePop() {
+            int top = cacheTop;
+            if (top < 0) {
+                return -1;
+            }
+            cacheTop = top - 1;
+            return cache[top];
+        }
+
+        boolean cachePush(int block) {
+            int[] c = cache;
+            int top = cacheTop + 1;
+            if (top == c.length) {
+                return false;
+            }
+            c[top] = block;
+            cacheTop = top;
+            return true;
         }
 
         /** The offset of the first block: the page's own offset in the segment, plus its color. */
@@ -1804,9 +1847,11 @@ final class MiMallocByteBufAllocator {
 
         // Regular free of a local thread block.
         private void freeBlockLocal(int block, boolean checkFull, LocalHeap heap) {
-            // Actual free: push on the local free list.
-            ((MiByteBufAdapter) this.delegate)._setInt(block, this.localFreeList);
-            this.localFreeList = block;
+            // Actual free: push on the cache, or on the local free list once the cache is full.
+            if (!this.cachePush(block)) {
+                ((MiByteBufAdapter) this.delegate)._setInt(block, this.localFreeList);
+                this.localFreeList = block;
+            }
             if (--this.usedBlocks == 0) {
                 pageRetire(heap);
             } else if (checkFull && this.isInFull) {
@@ -1940,7 +1985,7 @@ final class MiMallocByteBufAllocator {
             delegate._setInt(tail, this.localFreeList);
             this.localFreeList = head;
             // Update counts now
-            this.usedBlocks -= (short) count;
+            this.usedBlocks -= count;
         }
 
         // Is the page not yet used up to its reserved space?
@@ -1949,7 +1994,7 @@ final class MiMallocByteBufAllocator {
         }
 
         private boolean immediateAvailable() {
-            return this.freeList != -1;
+            return !this.cacheIsEmpty() || this.freeList != -1;
         }
 
         private boolean isMostlyUsed() {
@@ -2296,27 +2341,50 @@ final class MiMallocByteBufAllocator {
         return true;
     }
 
+    private static int popFromFreeList(Page page) {
+        int block = page.freeList;
+        if (block == -1) {
+            return -1;
+        }
+        MiByteBufAdapter adapter = (MiByteBufAdapter) page.delegate;
+        int[] cache = page.cache;
+        int top = page.cacheTop;
+        int next = adapter._getInt(block);
+        for (int n = page.cacheRemaining(); n > 0 && next != -1; n--) {
+            cache[++top] = next;
+            next = adapter._getInt(next);
+        }
+        page.cacheTop = top;
+        page.freeList = next;
+        return block;
+    }
+
     private MiByteBuf allocate(int size, int maxCapacity, MiByteBuf byteBuf, boolean isReAlloc, LocalHeap heap) {
         if (size <= PAGES_FREE_DIRECT_SIZE_MAX) {
             int wSize = toWordSize(size);
             Page page = heap.pagesFreeDirect[wSize];
-            // Fast path
-            int block = page.freeList;
-            if (block != -1) {
-                assert block >= page.blockBase()
-                        && block < page.blockBase() + page.capacityBlocks * page.blockSize
-                        && (block - page.blockBase()) % page.blockSize == 0
-                        : "bad block: " + block + ", page.adjustment=" + page.adjustment
-                        + ", blockBase=" + page.blockBase() + ", capacityBlocks=" + page.capacityBlocks
-                        + ", blockSize=" + page.blockSize;
-                if (byteBuf == null) {
-                    byteBuf = heap.getMiByteBuf();
+            if (page.fastAllocQuota > 0) {
+                // Fast path
+                int block = page.cachePop();
+                if (block == -1) {
+                    block = popFromFreeList(page);
                 }
-                AbstractByteBuf delegate = page.delegate;
-                page.freeList = ((MiByteBufAdapter) delegate)._getInt(block);
-                byteBuf.init(page, block, size, maxCapacity, isReAlloc, delegate, chunkHasArray, chunkHasMemoryAddress);
-                page.usedBlocks++;
-                return byteBuf;
+                if (block != -1) {
+                    assert block >= page.blockBase()
+                            && block < page.blockBase() + page.capacityBlocks * page.blockSize
+                            && (block - page.blockBase()) % page.blockSize == 0
+                            : "bad block: " + block + ", page.adjustment=" + page.adjustment
+                            + ", blockBase=" + page.blockBase() + ", capacityBlocks=" + page.capacityBlocks
+                            + ", blockSize=" + page.blockSize;
+                    if (byteBuf == null) {
+                        byteBuf = heap.getMiByteBuf();
+                    }
+                    AbstractByteBuf delegate = page.delegate;
+                    byteBuf.init(page, block, size, maxCapacity, isReAlloc, delegate, chunkHasArray, chunkHasMemoryAddress);
+                    page.usedBlocks++;
+                    page.fastAllocQuota--;
+                    return byteBuf;
+                }
             }
         }
         return allocateGeneric(size, maxCapacity, byteBuf, heap, isReAlloc);
@@ -2349,7 +2417,10 @@ final class MiMallocByteBufAllocator {
             heap.lastOutOfMemoryError = null;
             throw e;
         }
-        int block = page.freeList;
+        int block = page.cachePop();
+        if (block == -1) {
+            block = popFromFreeList(page);
+        }
         assert block > -1;
         assert block >= page.blockBase() && block < page.blockBase() + page.capacityBlocks * page.blockSize
                 && (block - page.blockBase()) % page.blockSize == 0
@@ -2360,9 +2431,9 @@ final class MiMallocByteBufAllocator {
             byteBuf = heap.getMiByteBuf();
         }
         AbstractByteBuf delegate =  page.delegate;
-        page.freeList = ((MiByteBufAdapter) delegate)._getInt(block);
         byteBuf.init(page, block, size, maxCapacity, isReAlloc, delegate, chunkHasArray, chunkHasMemoryAddress);
         page.usedBlocks++;
+        page.fastAllocQuota = FAST_ALLOC_QUOTA;
         // Move page to the full queue.
         if (!page.isHuge && page.reservedBlocks == page.usedBlocks) {
             heap.pageToFull(page, heap.heapPageQueueOf(page));
