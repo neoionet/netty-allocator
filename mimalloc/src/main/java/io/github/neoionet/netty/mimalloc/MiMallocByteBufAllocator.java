@@ -1776,6 +1776,7 @@ final class MiMallocByteBufAllocator {
         int[] cache = EMPTY_CACHE;
         int cacheTop = -1;
         int fastAllocQuota;
+        final long delegateMemoryAddress;
 
         // Empty Page Constructor
         Page() {
@@ -1786,6 +1787,7 @@ final class MiMallocByteBufAllocator {
             this.segment = segment;
             this.delegate = delegate;
             this.allocator = allocator;
+            this.delegateMemoryAddress = segment != null ? segment.delegateMemoryAddress : 0L;
         }
 
         boolean cacheIsEmpty() {
@@ -2085,6 +2087,8 @@ final class MiMallocByteBufAllocator {
         private final SegmentKind kind;
         // Only used for huge segment freeing.
         private final AtomicLong hugeSegmentFreeOwnerThreadId = new AtomicLong(NO_OWNER_THREAD_ID);
+        // The delegate's memory address, or 0 when it has none: it doesn't change while the delegate is in use.
+        final long delegateMemoryAddress;
 
         Segment(MiMallocByteBufAllocator parent, int segmentSize, int segmentSlices, SegmentKind kind,
                 AbstractByteBuf delegate, LocalHeap heap) {
@@ -2103,6 +2107,8 @@ final class MiMallocByteBufAllocator {
             this.segmentSize = segmentSize;
             this.usedPages = 0;
             this.kind = kind;
+            // Must be set before the slices are created: each Span copies it in the Page constructor.
+            this.delegateMemoryAddress = delegate.hasMemoryAddress() ? delegate.memoryAddress() : 0L;
             for (int i = 0; i < slices.length; i++) {
                 slices[i] = new Span(this, i * SEGMENT_SLICE_SIZE, 1, null, null, i);
             }
@@ -2571,6 +2577,9 @@ final class MiMallocByteBufAllocator {
         private boolean hasArray;
         private boolean hasMemoryAddress;
         private Page page;
+        // This buffer's memory address, from the root buffer's address that its chunk computed, or 0 when the root
+        // buffer has none, see _memoryAddress().
+        private long memoryAddress;
 
         MiByteBuf() {
             super(0);
@@ -2598,6 +2607,8 @@ final class MiMallocByteBufAllocator {
             assert hasArray == delegate.hasArray();
             this.hasMemoryAddress = hasMemoryAddress;
             assert hasMemoryAddress == delegate.hasMemoryAddress();
+            // the chunk's delegate is the root buffer
+            this.memoryAddress = hasMemoryAddress ? page.delegateMemoryAddress + adjustment : 0L;
         }
 
         @Override
@@ -2605,6 +2616,9 @@ final class MiMallocByteBufAllocator {
             assert this.adjustment > -1;
             this.rootParent = null;
             this.tmpNioBuf = null;
+            this.hasArray = false;
+            this.hasMemoryAddress = false;
+            this.memoryAddress = 0L;
             Page page = this.page;
             this.page = null;
             page.allocator.free(page, this.adjustment, this);
@@ -2677,13 +2691,17 @@ final class MiMallocByteBufAllocator {
         @Override
         public long memoryAddress() {
             ensureAccessible();
+            if (!hasMemoryAddress) {
+                throw new UnsupportedOperationException();
+            }
             return _memoryAddress();
         }
 
         long _memoryAddress() {
-            AbstractByteBuf root = rootParent;
-            return root != null ?
-                    (root.refCnt() != 0 && root.hasMemoryAddress() ? root.memoryAddress() : 0L) + adjustment : 0L;
+            // Use the address kept at init() instead of asking the root buffer, which would check its accessibility
+            // on every call. The root stays accessible while this buffer is in use.
+            // The address is 0 when the root buffer has none, and after deallocation.
+            return memoryAddress;
         }
 
         @Override
@@ -2861,6 +2879,15 @@ final class MiMallocByteBufAllocator {
         @Override
         public ByteBuf setBytes(int index, ByteBuf src, int srcIndex, int length) {
             checkIndex(index, length);
+            if (PlatformDependent.hasUnsafe() && hasMemoryAddress) {
+                // Copies from a source with a memory address or an array without an NIO buffer view of the source,
+                // which src.nioBuffer(...) below would allocate for each copy from a buffer of another kind, such
+                // as a slice or a buffer of another allocator. Without Unsafe, a direct buffer can still have a
+                // memory address (Java 25+), but the copy needs Unsafe; checking hasUnsafe() first lets the JIT
+                // drop this branch then.
+                MiByteBufUtil.setBytes(this, _memoryAddress() + index, index, src, srcIndex, length);
+                return this;
+            }
             if (src instanceof MiByteBuf && PlatformDependent.javaVersion() >= 16) {
                 MiByteBuf srcBuf = (MiByteBuf) src;
                 srcBuf.checkIndex(srcIndex, length);
@@ -2897,8 +2924,7 @@ final class MiMallocByteBufAllocator {
         }
 
         @Override
-        public ByteBuf getBytes(int index, OutputStream out, int length)
-                throws IOException {
+        public ByteBuf getBytes(int index, OutputStream out, int length) throws IOException {
             checkIndex(index, length);
             if (length != 0) {
                 ByteBuffer tmp = internalNioBuffer();
@@ -2908,8 +2934,7 @@ final class MiMallocByteBufAllocator {
         }
 
         @Override
-        public int getBytes(int index, GatheringByteChannel out, int length)
-                throws IOException {
+        public int getBytes(int index, GatheringByteChannel out, int length) throws IOException {
             checkIndex(index, length);
             ByteBuffer buf = internalNioBuffer().duplicate();
             buf.position(index).limit(index + length);
@@ -2917,8 +2942,7 @@ final class MiMallocByteBufAllocator {
         }
 
         @Override
-        public int getBytes(int index, FileChannel out, long position, int length)
-                throws IOException {
+        public int getBytes(int index, FileChannel out, long position, int length) throws IOException {
             checkIndex(index, length);
             ByteBuffer buf = internalNioBuffer().duplicate();
             buf.position(index).limit(index + length);
@@ -2926,8 +2950,7 @@ final class MiMallocByteBufAllocator {
         }
 
         @Override
-        public int setBytes(int index, InputStream in, int length)
-                throws IOException {
+        public int setBytes(int index, InputStream in, int length) throws IOException {
             checkIndex(index, length);
             if (rootParent.hasArray()) {
                 return rootParent.setBytes(idx(index), in, length);
@@ -2942,8 +2965,7 @@ final class MiMallocByteBufAllocator {
         }
 
         @Override
-        public int setBytes(int index, ScatteringByteChannel in, int length)
-                throws IOException {
+        public int setBytes(int index, ScatteringByteChannel in, int length) throws IOException {
             try {
                 return in.read(internalNioBuffer(index, length));
             } catch (ClosedChannelException ignored) {
@@ -2952,8 +2974,7 @@ final class MiMallocByteBufAllocator {
         }
 
         @Override
-        public int setBytes(int index, FileChannel in, long position, int length)
-                throws IOException {
+        public int setBytes(int index, FileChannel in, long position, int length) throws IOException {
             try {
                 return in.read(internalNioBuffer(index, length), position);
             } catch (ClosedChannelException ignored) {

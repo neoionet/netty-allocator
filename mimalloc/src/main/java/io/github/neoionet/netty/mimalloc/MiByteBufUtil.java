@@ -26,6 +26,9 @@ import io.netty.util.internal.PlatformDependent;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+
+import static io.netty.util.internal.MathUtil.isOutOfBounds;
+import static io.netty.util.internal.ObjectUtil.checkNotNull;
 import static io.netty.util.internal.PlatformDependent.hasUnsafe;
 import static io.netty.util.internal.StringUtil.isSurrogate;
 import io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.MiByteBuf;
@@ -351,6 +354,23 @@ final class MiByteBufUtil {
             out.write(in, inOffset, len);
             outLen -= len;
         } while (outLen > 0);
+    }
+
+    // The caller must have checked `index` and `length` against `buf` (checkIndex() is protected in AbstractByteBuf).
+    static void setBytes(AbstractByteBuf buf, long addr, int index, ByteBuf src, int srcIndex, int length) {
+        checkNotNull(src, "src");
+        if (isOutOfBounds(srcIndex, length, src.capacity())) {
+            throw new IndexOutOfBoundsException("srcIndex: " + srcIndex);
+        }
+        if (length != 0) {
+            if (src.hasMemoryAddress()) {
+                PlatformDependent.copyMemory(src.memoryAddress() + srcIndex, addr, length);
+            } else if (src.hasArray()) {
+                PlatformDependent.copyMemory(src.array(), src.arrayOffset() + srcIndex, addr, length);
+            } else {
+                src.getBytes(srcIndex, buf, index, length);
+            }
+        }
     }
 
     /**
