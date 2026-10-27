@@ -2577,9 +2577,6 @@ final class MiMallocByteBufAllocator {
         private boolean hasArray;
         private boolean hasMemoryAddress;
         private Page page;
-        // This buffer's memory address, from the root buffer's address that its chunk computed, or 0 when the root
-        // buffer has none, see _memoryAddress().
-        private long memoryAddress;
 
         MiByteBuf() {
             super(0);
@@ -2607,8 +2604,6 @@ final class MiMallocByteBufAllocator {
             assert hasArray == delegate.hasArray();
             this.hasMemoryAddress = hasMemoryAddress;
             assert hasMemoryAddress == delegate.hasMemoryAddress();
-            // the chunk's delegate is the root buffer
-            this.memoryAddress = hasMemoryAddress ? page.delegateMemoryAddress + adjustment : 0L;
         }
 
         @Override
@@ -2618,7 +2613,6 @@ final class MiMallocByteBufAllocator {
             this.tmpNioBuf = null;
             this.hasArray = false;
             this.hasMemoryAddress = false;
-            this.memoryAddress = 0L;
             Page page = this.page;
             this.page = null;
             page.allocator.free(page, this.adjustment, this);
@@ -2698,10 +2692,10 @@ final class MiMallocByteBufAllocator {
         }
 
         long _memoryAddress() {
-            // Use the address kept at init() instead of asking the root buffer, which would check its accessibility
+            // Use the address kept in the page instead of asking the root buffer, which would check its accessibility
             // on every call. The root stays accessible while this buffer is in use.
             // The address is 0 when the root buffer has none, and after deallocation.
-            return memoryAddress;
+            return hasMemoryAddress ? page.delegateMemoryAddress + adjustment : 0L;
         }
 
         @Override
