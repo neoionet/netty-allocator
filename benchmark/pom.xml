@@ -43,6 +43,11 @@
             <artifactId>jmh-generator-annprocess</artifactId>
             <scope>provided</scope>
         </dependency>
+        <dependency>
+            <groupId>org.jfree</groupId>
+            <artifactId>jfreechart</artifactId>
+            <version>1.5.6</version>
+        </dependency>
     </dependencies>
 
     <build>
