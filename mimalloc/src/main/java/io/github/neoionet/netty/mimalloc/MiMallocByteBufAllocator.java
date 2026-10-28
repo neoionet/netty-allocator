@@ -1518,8 +1518,9 @@ final class MiMallocByteBufAllocator {
         }
 
         private void pageQueueEnqueueFromFull(PageQueue to, PageQueue from, Page page) {
-            // Note: we could insert at the front to increase reuse?
-            pageQueueEnqueueFromEx(to, from, true, page);
+            // Insert at the 2nd place: the page just had a block freed, so its memory and metadata are likely still
+            // in the CPU cache, and it is picked as soon as the current page runs out.
+            pageQueueEnqueueFromEx(to, from, false, page);
         }
 
         private void pageQueueEnqueueFromEx(PageQueue to, PageQueue from, boolean enqueueAtEnd, Page page) {
