@@ -2367,31 +2367,39 @@ final class MiMallocByteBufAllocator {
     }
 
     private MiByteBuf allocate(int size, int maxCapacity, MiByteBuf byteBuf, boolean isReAlloc, LocalHeap heap) {
+        Page page;
         if (size <= PAGES_FREE_DIRECT_SIZE_MAX) {
-            int wSize = toWordSize(size);
-            Page page = heap.pagesFreeDirect[wSize];
-            if (page.fastAllocQuota > 0) {
-                // Fast path
-                int block = page.cachePop();
-                if (block == -1) {
-                    block = popFromFreeList(page);
+            page = heap.pagesFreeDirect[toWordSize(size)];
+        } else if (size <= MEDIUM_BLOCK_SIZE_MAX) {
+            // Sizes above the direct array: take the first page of the size class queue,
+            // so these sizes skip the generic path while it has free blocks.
+            // The fast allocation quota still sends them through the generic path regularly for its collection work.
+            Page first = heap.pageQueues[pageQueueIndex(size)].firstPage;
+            page = first != null ? first : EMPTY_PAGE;
+        } else {
+            return allocateGeneric(size, maxCapacity, byteBuf, heap, isReAlloc);
+        }
+        if (page.fastAllocQuota > 0) {
+            // Fast path
+            int block = page.cachePop();
+            if (block == -1) {
+                block = popFromFreeList(page);
+            }
+            if (block != -1) {
+                assert block >= page.blockBase()
+                        && block < page.blockBase() + page.capacityBlocks * page.blockSize
+                        && (block - page.blockBase()) % page.blockSize == 0
+                        : "bad block: " + block + ", page.adjustment=" + page.adjustment
+                        + ", blockBase=" + page.blockBase() + ", capacityBlocks=" + page.capacityBlocks
+                        + ", blockSize=" + page.blockSize;
+                if (byteBuf == null) {
+                    byteBuf = heap.getMiByteBuf();
                 }
-                if (block != -1) {
-                    assert block >= page.blockBase()
-                            && block < page.blockBase() + page.capacityBlocks * page.blockSize
-                            && (block - page.blockBase()) % page.blockSize == 0
-                            : "bad block: " + block + ", page.adjustment=" + page.adjustment
-                            + ", blockBase=" + page.blockBase() + ", capacityBlocks=" + page.capacityBlocks
-                            + ", blockSize=" + page.blockSize;
-                    if (byteBuf == null) {
-                        byteBuf = heap.getMiByteBuf();
-                    }
-                    AbstractByteBuf delegate = page.delegate;
-                    byteBuf.init(page, block, size, maxCapacity, isReAlloc, delegate, chunkHasArray, chunkHasMemoryAddress);
-                    page.usedBlocks++;
-                    page.fastAllocQuota--;
-                    return byteBuf;
-                }
+                AbstractByteBuf delegate = page.delegate;
+                byteBuf.init(page, block, size, maxCapacity, isReAlloc, delegate, chunkHasArray, chunkHasMemoryAddress);
+                page.usedBlocks++;
+                page.fastAllocQuota--;
+                return byteBuf;
             }
         }
         return allocateGeneric(size, maxCapacity, byteBuf, heap, isReAlloc);
