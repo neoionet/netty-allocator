@@ -129,7 +129,7 @@ final class MiMallocByteBufAllocator {
     private static final byte DEFAULT_PAGE_RETIRE_EXPIRE_INIT = 7;
 
     // Collect heaps every N(default 10000) generic allocation calls.
-    private static final int HEAP_OPTION_GENERIC_COLLECT = 10000;
+    private static final int HEAP_GENERIC_COLLECT_COUNT = 10000;
 
     private final AtomicLong usedMemory = new AtomicLong();
 
@@ -145,7 +145,8 @@ final class MiMallocByteBufAllocator {
     // so -1L is safe to use as a sentinel for "no owner".
     private static final long NO_OWNER_THREAD_ID = -1L;
 
-    private static final long MIN_SEGMENTS_DECAY_NANOS_INTERVAL = TimeUnit.SECONDS.toNanos(10);
+    private static final long SEGMENTS_DECAY_NANOS_INTERVAL = TimeUnit.SECONDS.toNanos(10);
+    private static final long HEAP_NORMAL_COLLECT_NANOS_INTERVAL = TimeUnit.SECONDS.toNanos(10);
 
     private final boolean chunkHasArray;
     private final boolean chunkHasMemoryAddress;
@@ -376,6 +377,7 @@ final class MiMallocByteBufAllocator {
         // Written by `newChunk(size, true)` and read by its caller within the same heap critical section.
         private OutOfMemoryError lastOutOfMemoryError;
         private final ArrayDequeBounded<int[]> cachePool;
+        private long lastHeapNormalCollectNano = System.nanoTime();
 
         LocalHeap(MiMallocByteBufAllocator allocator, StampedLock sharedLock) {
             this.segmentTld = new SegmentTld();
@@ -2408,16 +2410,20 @@ final class MiMallocByteBufAllocator {
     private MiByteBuf allocateGeneric(int size, int maxCapacity, MiByteBuf byteBuf, LocalHeap heap, boolean isReAlloc) {
         // Do administrative tasks every N generic allocations.
         boolean heapCollected = false;
+        long heapNormalCollectNano = 0;
         if (++heap.genericCount >= 100) {
             heap.genericCollectCount += heap.genericCount;
             heap.genericCount = 0;
             // Call potential deferred free routines,
             // free delayed frees from other threads (but skip contended ones).
             heap.heapDelayedFreePartial();
+            heapNormalCollectNano = System.nanoTime();
             // Collect every once in a while.
-            if (heap.genericCollectCount >= HEAP_OPTION_GENERIC_COLLECT) {
+            if (heap.genericCollectCount >= HEAP_GENERIC_COLLECT_COUNT
+                    || heapNormalCollectNano - heap.lastHeapNormalCollectNano > HEAP_NORMAL_COLLECT_NANOS_INTERVAL) {
                 heap.genericCollectCount = 0;
                 heap.heapCollect(NORMAL);
+                heap.lastHeapNormalCollectNano = heapNormalCollectNano;
                 heapCollected = true;
             }
         }
@@ -2453,7 +2459,7 @@ final class MiMallocByteBufAllocator {
         if (!page.isHuge && page.reservedBlocks == page.usedBlocks) {
             heap.pageToFull(page, heap.heapPageQueueOf(page));
         }
-        if (heapCollected && System.nanoTime() - heap.lastSegmentsDecayNano > MIN_SEGMENTS_DECAY_NANOS_INTERVAL) {
+        if (heapCollected && heapNormalCollectNano - heap.lastSegmentsDecayNano > SEGMENTS_DECAY_NANOS_INTERVAL) {
             Segment segment;
             assert heap.coldReservedSegmentCount <= heap.reservedNormalSegmentDeque.size();
             int n = (heap.coldReservedSegmentCount + 1) >>> 1;
@@ -2461,7 +2467,7 @@ final class MiMallocByteBufAllocator {
                 segment.deallocate();
             }
             heap.coldReservedSegmentCount = heap.reservedNormalSegmentDeque.size();
-            heap.lastSegmentsDecayNano = System.nanoTime();
+            heap.lastSegmentsDecayNano = heapNormalCollectNano;
         }
         return byteBuf;
     }
