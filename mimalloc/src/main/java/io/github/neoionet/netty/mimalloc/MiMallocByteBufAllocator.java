@@ -1857,9 +1857,12 @@ final class MiMallocByteBufAllocator {
                 ((MiByteBufAdapter) this.delegate)._setInt(block, this.localFreeList);
                 this.localFreeList = block;
             }
-            if (--this.usedBlocks == 0) {
-                pageRetire(heap);
-            } else if (checkFull && this.isInFull) {
+            // Whether a page becomes empty is not checked here: with few live blocks per size class it is
+            // hard to predict, and the branch cost more than retiring the page saved. Empty pages stay in
+            // their queue for reuse, and the next heap collect frees them.
+            --this.usedBlocks;
+            assert this.usedBlocks >= 0;
+            if (checkFull && this.isInFull) {
                 pageUnfull(heap);
             }
         }
