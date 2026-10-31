@@ -123,7 +123,7 @@ b.group(group)
     *   **Default value:** `best`
 
 *   **`-Dio.github.neoionet.allocator.mimalloc.segment.size.mib`**
-    *   **Allowed Values:** `4`, `8`, `16`, `32`
+    *   **Allowed Values:** `1`, `2`, `4`, `8`, `16`, `32`
     *   **Description:** Sets the segment size in MiB.
     *   **Default value:** `4`
   

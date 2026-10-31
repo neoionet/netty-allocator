@@ -29,13 +29,13 @@ public final class MiMallocOption {
 
     private static final String SEGMENT_SIZE_PROP_KEY = "io.github.neoionet.allocator.mimalloc.segment.size.mib";
 
-    // Allowed segment size: {4, 8, 16, 32} MiB.
+    // Default segment size in MiB.
+    private static final int DEFAULT_SEGMENT_SIZE_IN_MIB = 4;
+
+    // Allowed segment size: {1, 2, 4, 8, 16, 32} MiB.
     static int calculateSegmentSizeInBytes(int segmentSizeInMiB) {
         ObjectUtil.checkPositive(segmentSizeInMiB, "segmentSizeInMiB");
         int segmentMibNextPower2 = MathUtil.safeFindNextPositivePowerOfTwo(segmentSizeInMiB);
-        if (segmentMibNextPower2 < 4) {
-            segmentMibNextPower2 = 4;
-        }
         if (segmentMibNextPower2 > 32) {
             segmentMibNextPower2 = 32;
         }
@@ -68,8 +68,8 @@ public final class MiMallocOption {
     }
 
     static int getDefaultSegmentSizeInBytes() {
-        // Default segment size: 4 MiB.
-        String value = SystemPropertyUtil.get(SEGMENT_SIZE_PROP_KEY, "4").trim();
+        String value = SystemPropertyUtil.get(SEGMENT_SIZE_PROP_KEY,
+                String.valueOf(DEFAULT_SEGMENT_SIZE_IN_MIB)).trim();
         return withPropertyContext(SEGMENT_SIZE_PROP_KEY, value, () -> parseSegmentSizeInBytes(value));
     }
 
