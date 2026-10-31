@@ -124,10 +124,6 @@ final class MiMallocByteBufAllocator {
 
     private static final Object RECLAIMED_SEGMENT_FLAG = new Object();
 
-    private static final byte DEFAULT_PAGE_RETIRE_CYCLES_HIGH = 16;
-    private static final byte DEFAULT_PAGE_RETIRE_CYCLES_LOW = 4;
-    private static final byte DEFAULT_PAGE_RETIRE_EXPIRE_INIT = 7;
-
     // Collect heaps every N(default 10000) generic allocation calls.
     private static final int HEAP_GENERIC_COLLECT_COUNT = 10000;
 
@@ -355,8 +351,6 @@ final class MiMallocByteBufAllocator {
     static final class LocalHeap {
         final SegmentTld segmentTld;
         int pageCount; // total number of pages in the `pages` queues.
-        int pageRetiredMin; // smallest retired index (retired pages are fully free, but still in the page queues)
-        int pageRetiredMax; // largest retired index into the `pages` array.
         int genericCount; // how often is `allocateGeneric` called
         int genericCollectCount; // how often is `allocateGeneric` called without collecting.
         final Page[] pagesFreeDirect;
@@ -432,7 +426,7 @@ final class MiMallocByteBufAllocator {
             page.pageFreeCollect(isForce);
             if (page.usedBlocks == 0) {
                 // No more used blocks, free the page.
-                // Note: this will free retired pages.
+                // Local frees leave empty pages in their queue, so this is where they are freed.
                 pageFree(page, pq);
             } else if (collectType == ABANDON) {
                 // There are still used blocks, but the thread is done, abandon the page.
@@ -452,9 +446,6 @@ final class MiMallocByteBufAllocator {
             // Free all current thread's delayed blocks.
             // If during abandoning, after this, there are no more thread-delayed references into the pages.
             heapDelayedFreeAll();
-            // Collect retired pages.
-            // This will update `pageRetiredMin` & `pageRetiredMax`, which helps `heapCollectRetired()` efficiency.
-            heapCollectRetired(isForceCollect(collectType));
             // Collect all pages owned by this thread.
             heapVisitPages(collectType, VISIT_TYPE_PAGE_COLLECT);
             // Collect abandoned segments.
@@ -493,38 +484,6 @@ final class MiMallocByteBufAllocator {
                     segmentMarkAbandoned(segment);
                 }
             }
-        }
-
-        // Free retired pages: we don't need to look at the entire queues,
-        // since we only retire pages that are at the head position in a queue.
-        private void heapCollectRetired(boolean isForce) {
-            int min = PAGE_QUEUE_BIN_FULL_INDEX;
-            int max = 0;
-            for (int bin = this.pageRetiredMin; bin <= this.pageRetiredMax; bin++) {
-                PageQueue pq = this.pageQueues[bin];
-                Page page = pq.firstPage;
-                if (page != null && page.retireExpire != 0) {
-                    if (page.usedBlocks == 0) {
-                        page.retireExpire--;
-                        if (isForce || page.retireExpire == 0) {
-                            pageFree(pq.firstPage, pq);
-                        } else {
-                            // keep retired, update min/max
-                            if (bin < min) {
-                                min = bin;
-                            }
-                            if (bin > max) {
-                                max = bin;
-                            }
-                        }
-                    } else {
-                        // disable retirement
-                        page.retireExpire = 0;
-                    }
-                }
-            }
-            this.pageRetiredMin = min;
-            this.pageRetiredMax = max;
         }
 
         private void heapDelayedFreeAll() {
@@ -630,7 +589,6 @@ final class MiMallocByteBufAllocator {
             Page page = segmentHugeSpanAllocate(segment, size);
             // A fresh page was found, initialize it.
             page.reservedBlocks = 1;
-            page.retireExpire = 0;
             page.freeList = page.blockBase();
             ((MiByteBufAdapter) buf)._setInt(page.freeList, -1);
             page.capacityBlocks = 1;
@@ -655,8 +613,6 @@ final class MiMallocByteBufAllocator {
             if (pq.firstPage != null) {
                 pq.firstPage.pageFreeCollect(false);
                 if (pq.firstPage.immediateAvailable()) {
-                    // disable retirement
-                    pq.firstPage.retireExpire = 0;
                     return pq.firstPage; // fast path
                 }
             }
@@ -735,7 +691,6 @@ final class MiMallocByteBufAllocator {
                 }
             }
             if (page == null) {
-                heapCollectRetired(false); // Perhaps make a page available.
                 page = pageFresh(pq);
                 if (page == null && firstTry) {
                     // out-of-memory or an abandoned page with free blocks was reclaimed, try once again.
@@ -744,8 +699,6 @@ final class MiMallocByteBufAllocator {
             } else {
                 // Move the page to the front of the queue.
                 pageQueueMoveToFront(pq, page);
-                // disable retirement
-                page.retireExpire = 0;
             }
             return page;
         }
@@ -848,7 +801,6 @@ final class MiMallocByteBufAllocator {
                 assert page.adjustment == 0 : page.adjustment;
                 assert page.startColor == 0 : page.startColor;
                 page.reservedBlocks = 1;
-                page.retireExpire = 0;
                 page.freeList = page.blockBase();
                 ((MiByteBufAdapter) page.delegate)._setInt(page.freeList, -1);
                 page.capacityBlocks = 1;
@@ -857,7 +809,6 @@ final class MiMallocByteBufAllocator {
                     page.threadFreeList.set(INIT_EMPTY_THREAD_FREELIST);
                 }
                 page.blockSize = blockSize;
-                page.retireExpire = DEFAULT_PAGE_RETIRE_EXPIRE_INIT;
                 int pageSize = page.sliceCount * SEGMENT_SLICE_SIZE;
                 int blocks = pageSize / blockSize;
                 int cacheLines = startOffsetCacheLines(blockSize, pageSize, blocks);
@@ -1157,7 +1108,6 @@ final class MiMallocByteBufAllocator {
             page.freeList = -1;
             page.localFreeList = -1;
             page.isInFull = false;
-            page.retireExpire = 0;
             Segment segment = page.segment;
             // Free it
             Span slice = segmentSpanFreeCoalesce((Span) page);
@@ -1672,9 +1622,6 @@ final class MiMallocByteBufAllocator {
         int capacityBlocks; // number of blocks created.
         int reservedBlocks; // number of blocks reserved.
         boolean isInFull;
-        // Expiration count for retired blocks.
-        // retireExpire = 0 means disable retirement.
-        int retireExpire = DEFAULT_PAGE_RETIRE_EXPIRE_INIT;
         int freeList = -1;
         int localFreeList = -1;
         int usedBlocks; // number of blocks in use (including blocks in `thread-free list`)
@@ -1865,33 +1812,6 @@ final class MiMallocByteBufAllocator {
             if (checkFull && this.isInFull) {
                 pageUnfull(heap);
             }
-        }
-
-        // Retire a page with no more used blocks.
-        // Important to not retire too quickly though as new allocations might be coming soon.
-        private void pageRetire(LocalHeap heap) {
-            // Don't retire too often.
-            // (or we end up retiring and re-allocating most of the time).
-            // For now, we don't retire if it is the only page left of this size class.
-            Page page = this;
-            PageQueue pq = heap.heapPageQueueOf(page);
-            int bSize = page.blockSize;
-            if (pq.index < PAGE_QUEUE_BIN_LARGE_INDEX) {  // not full && not huge queue
-                if (pq.lastPage == page && pq.firstPage == page) { // the only page in the queue
-                    // Enable retirement
-                    page.retireExpire = bSize <= SMALL_BLOCK_SIZE_MAX ?
-                            DEFAULT_PAGE_RETIRE_CYCLES_HIGH : DEFAULT_PAGE_RETIRE_CYCLES_LOW;
-                    int index = pq.index;
-                    if (index < heap.pageRetiredMin) {
-                        heap.pageRetiredMin = index;
-                    }
-                    if (index > heap.pageRetiredMax) {
-                        heap.pageRetiredMax = index;
-                    }
-                    return; // don't free after all
-                }
-            }
-            heap.pageFree(page, pq);
         }
 
         // Move a page from the full list back to a regular list.
