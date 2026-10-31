@@ -2217,10 +2217,16 @@ final class MiMallocByteBufAllocator {
     }
 
     private MiByteBuf allocate(int size, int maxCapacity, MiByteBuf byteBuf, boolean isReAlloc) {
-        int goodAllocSize = 0;
         if (isThreadLocalAllocation()) {
             return allocate(size, maxCapacity, byteBuf, isReAlloc, THREAD_LOCAL_HEAP.get());
-        } else if (size <= MEDIUM_BLOCK_SIZE_MAX ||
+        } else {
+            return allocateShared(size, maxCapacity, byteBuf, isReAlloc);
+        }
+    }
+
+    private MiByteBuf allocateShared(int size, int maxCapacity, MiByteBuf byteBuf, boolean isReAlloc) {
+        int goodAllocSize = 0;
+        if (size <= MEDIUM_BLOCK_SIZE_MAX ||
                 (goodAllocSize = getGoodOsAllocSize(size)) <= largeBlockSizeMaxParam) { // If not huge.
             long threadId = Thread.currentThread().getId();
             int currentHeapsScanLength;
@@ -2311,12 +2317,7 @@ final class MiMallocByteBufAllocator {
                 block = popFromFreeList(page);
             }
             if (block != -1) {
-                assert block >= page.blockBase()
-                        && block < page.blockBase() + page.capacityBlocks * page.blockSize
-                        && (block - page.blockBase()) % page.blockSize == 0
-                        : "bad block: " + block + ", page.adjustment=" + page.adjustment
-                        + ", blockBase=" + page.blockBase() + ", capacityBlocks=" + page.capacityBlocks
-                        + ", blockSize=" + page.blockSize;
+                assert checkBlock(page, block, "allocate fast path");
                 if (byteBuf == null) {
                     byteBuf = heap.getMiByteBuf();
                 }
@@ -2328,6 +2329,19 @@ final class MiMallocByteBufAllocator {
             }
         }
         return allocateGeneric(size, maxCapacity, byteBuf, heap, isReAlloc);
+    }
+
+    // Only used for assertion.
+    private static boolean checkBlock(Page page, int block, String where) {
+        int base = page.blockBase();
+        if (block >= base
+                && block < base + page.capacityBlocks * page.blockSize
+                && (block - base) % page.blockSize == 0) {
+            return true;
+        }
+        throw new AssertionError(where + ": bad block: " + block + ", page.adjustment=" + page.adjustment
+                + ", blockBase=" + base + ", capacityBlocks=" + page.capacityBlocks
+                + ", blockSize=" + page.blockSize);
     }
 
     private MiByteBuf allocateGeneric(int size, int maxCapacity, MiByteBuf byteBuf, LocalHeap heap, boolean isReAlloc) {
@@ -2366,11 +2380,7 @@ final class MiMallocByteBufAllocator {
             block = popFromFreeList(page);
         }
         assert block > -1;
-        assert block >= page.blockBase() && block < page.blockBase() + page.capacityBlocks * page.blockSize
-                && (block - page.blockBase()) % page.blockSize == 0
-                : "allocateGeneric:bad block: " + block + ", page.adjustment=" + page.adjustment
-                + ", blockBase=" + page.blockBase() + ", capacityBlocks=" + page.capacityBlocks
-                + ", blockSize=" + page.blockSize;
+        assert checkBlock(page, block, "allocateGeneric");
         if (byteBuf == null) {
             byteBuf = heap.getMiByteBuf();
         }
