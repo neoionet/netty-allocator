@@ -159,6 +159,10 @@ final class MiMallocByteBufAllocator {
     private static final int FREE_LIST_CACHE_SIZE = 64;
     private static final int FAST_ALLOC_QUOTA = 64;
 
+    // A page in the full queue is moved back only once at least 1/2^PAGE_UNFULL_MIN_FREE_SHIFT of its blocks
+    // (and at least one) are free, so that it serves many allocations before it fills up again.
+    private static final int PAGE_UNFULL_MIN_FREE_SHIFT = 3;
+
     MiMallocByteBufAllocator(ChunkAllocator chunkAllocator, MiByteBufAllocator.Builder builder, AllocType allocType) {
         this.chunkAllocator = chunkAllocator;
         this.chunkHasArray = chunkAllocator.chunkHasArray();
@@ -1809,7 +1813,9 @@ final class MiMallocByteBufAllocator {
             // their queue for reuse, and the next heap collect frees them.
             --this.usedBlocks;
             assert this.usedBlocks >= 0;
-            if (checkFull && this.isInFull) {
+            if (checkFull && this.isInFull
+                    && (this.usedBlocks == 0 // An empty page is always moved back.
+                    || this.reservedBlocks - this.usedBlocks >= this.reservedBlocks >>> PAGE_UNFULL_MIN_FREE_SHIFT)) {
                 pageUnfull(heap);
             }
         }
