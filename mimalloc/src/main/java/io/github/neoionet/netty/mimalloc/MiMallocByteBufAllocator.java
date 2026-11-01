@@ -1816,9 +1816,10 @@ final class MiMallocByteBufAllocator {
             // the next heap collect frees them; a page in the full queue is moved back first, see below.
             --this.usedBlocks;
             assert this.usedBlocks >= 0;
+            assert !this.isInFull || this.capacityBlocks == this.reservedBlocks;
             if (checkFull && this.isInFull
                     && (this.usedBlocks == 0 // An empty page is always moved back.
-                    || this.reservedBlocks - this.usedBlocks >= this.reservedBlocks >>> PAGE_UNFULL_MIN_FREE_SHIFT)) {
+                    || this.capacityBlocks - this.usedBlocks >= this.capacityBlocks >>> PAGE_UNFULL_MIN_FREE_SHIFT)) {
                 pageUnfull(heap);
             }
         }
