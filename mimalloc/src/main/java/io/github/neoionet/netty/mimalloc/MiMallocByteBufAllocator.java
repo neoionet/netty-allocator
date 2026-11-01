@@ -543,7 +543,8 @@ final class MiMallocByteBufAllocator {
             }
             // Collect all other non-local frees (move from `thread_free` to `free`) to ensure up-to-date `used` count.
             page.pageFreeCollect(false);
-            // Free the block (possibly freeing the page as well since `usedBlocks` is updated)
+            // Free the block (`usedBlocks` is updated),
+            // which moves the page back from the full queue once enough of it is free.
             page.freeBlockLocal(block, true /* check for a full page */, this);
             return true;
         }
@@ -554,7 +555,9 @@ final class MiMallocByteBufAllocator {
                 return;
             }
             boolean isMarkPage = visitType == VISIT_TYPE_PAGE_MARK;
-            // No need to collect the full page queue, except for the page mark or abandoning.
+            // The full page queue is only visited for the page mark or abandoning: an empty page never stays there,
+            // as both local frees and delayed frees (from other threads, processed by `heapCollect()` before this)
+            // go through `freeBlockLocal`, which moves an empty page back to its regular queue.
             int maxBinIndex = isMarkPage || collectType == ABANDON ?
                     PAGE_QUEUE_BIN_FULL_INDEX : PAGE_QUEUE_BIN_FULL_INDEX - 1;
             for (int i = 0; i <= maxBinIndex; i++) {
@@ -1808,9 +1811,9 @@ final class MiMallocByteBufAllocator {
                 ((MiByteBufAdapter) this.delegate)._setInt(block, this.localFreeList);
                 this.localFreeList = block;
             }
-            // Whether a page becomes empty is not checked here: with few live blocks per size class it is
-            // hard to predict, and the branch cost more than retiring the page saved. Empty pages stay in
-            // their queue for reuse, and the next heap collect frees them.
+            // An empty page is not retired here: with few live blocks per size class it is hard to predict, and
+            // the branch cost more than retiring the page saved. Empty pages stay in their queue for reuse, and
+            // the next heap collect frees them; a page in the full queue is moved back first, see below.
             --this.usedBlocks;
             assert this.usedBlocks >= 0;
             if (checkFull && this.isInFull
