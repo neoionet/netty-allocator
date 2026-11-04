@@ -30,9 +30,9 @@ import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.StampedLock;
 
 import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.CollectType.ABANDON;
 import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.CollectType.FORCE;
@@ -192,7 +192,7 @@ final class MiMallocByteBufAllocator {
             sharedHeapWraps[i] = new SharedHeapWrap();
         }
         // Init the first heap.
-        sharedHeapWraps[0].heap = new LocalHeap(this, sharedHeapWraps[0].lock);
+        sharedHeapWraps[0].heap = new LocalHeap(this, sharedHeapWraps[0]);
         this.heapsScanLength = new AtomicInteger(1);
         if (logger.isDebugEnabled()) {
             logger.debug("allocType: " + allocType + ", effective segmentSizeInMiB: {}, instance: {}",
@@ -241,11 +241,21 @@ final class MiMallocByteBufAllocator {
     }
 
     private abstract static class SharedHeapWrapValue extends SharedHeapWrapLhsPadding {
-        final StampedLock lock = new StampedLock();
+        // The lock of the shared heap: 0 if free, 1 if held. It is a field here, between the paddings of the wrap,
+        // rather than a lock object of its own: it is written at every allocation and free on the heap, and a
+        // separate lock object (it was a StampedLock) is placed anywhere by the GC, for example right after the
+        // allocator or `heapsScanLength`, which every thread reads at every allocation; all the threads were then
+        // slowed by the cache line moving between the cores.
+        volatile int lockState;
         LocalHeap heap;
     }
 
     private static final class SharedHeapWrap extends SharedHeapWrapValue {
+        private static final AtomicIntegerFieldUpdater<SharedHeapWrapValue> LOCK_STATE_UPDATER =
+                AtomicIntegerFieldUpdater.newUpdater(SharedHeapWrapValue.class, "lockState");
+        // How many times `lock()` retries before it yields: the lock is only held for one allocation or free.
+        private static final int LOCK_SPINS = 100;
+
         // Borrowed from JCTools.
         byte b000,b001,b002,b003,b004,b005,b006,b007;//  8b
         byte b010,b011,b012,b013,b014,b015,b016,b017;// 16b
@@ -263,6 +273,26 @@ final class MiMallocByteBufAllocator {
         byte b150,b151,b152,b153,b154,b155,b156,b157;//112b
         byte b160,b161,b162,b163,b164,b165,b166,b167;//120b
         byte b170,b171,b172,b173,b174,b175,b176,b177;//128b
+
+        // Acquires the lock if it is free, without waiting.
+        boolean tryLock() {
+            return lockState == 0 && LOCK_STATE_UPDATER.compareAndSet(this, 0, 1);
+        }
+
+        // Acquires the lock, spinning, then yielding, until it is free.
+        void lock() {
+            int spins = 0;
+            while (!tryLock()) {
+                if (++spins >= LOCK_SPINS) {
+                    Thread.yield();
+                }
+            }
+        }
+
+        void unlock() {
+            // A release store: the writes made under the lock are visible to the next thread that acquires it.
+            LOCK_STATE_UPDATER.lazySet(this, 0);
+        }
     }
 
     private void freeAllAbandonedSegments() {
@@ -274,19 +304,16 @@ final class MiMallocByteBufAllocator {
     }
 
     private void abandonAllSharedSegments() {
-        StampedLock lock;
-        long lockStamp;
         LocalHeap heap;
         for (SharedHeapWrap sharedHeapWrap : this.sharedHeapWraps) {
-            lock = sharedHeapWrap.lock;
-            lockStamp = lock.writeLock();
+            sharedHeapWrap.lock();
             try {
                 heap = sharedHeapWrap.heap;
                 if (heap != null) {
                     heap.heapCollect(ABANDON);
                 }
             } finally {
-                lock.unlockWrite(lockStamp);
+                sharedHeapWrap.unlock();
             }
         }
     }
@@ -368,7 +395,8 @@ final class MiMallocByteBufAllocator {
         private final ArrayDequeBounded<Segment> reservedNormalSegmentDeque;
         private int coldReservedSegmentCount;
         private long lastSegmentsDecayNano = System.nanoTime();
-        private final StampedLock sharedLock;
+        // The wrap that holds this heap and its lock, or null if this is a thread-local heap.
+        private final SharedHeapWrap sharedHeapWrap;
         private final ArrayDequeBounded<MiByteBuf> miBufLocalDeque;
         private final Queue<MiByteBuf> miBufCrossThreadsQueue;
         private final Queue<DelayedBlock> delayedBlockDeque;
@@ -377,13 +405,13 @@ final class MiMallocByteBufAllocator {
         private final ArrayDequeBounded<int[]> cachePool;
         private long lastHeapNormalCollectNano = System.nanoTime();
 
-        LocalHeap(MiMallocByteBufAllocator allocator, StampedLock sharedLock) {
+        LocalHeap(MiMallocByteBufAllocator allocator, SharedHeapWrap sharedHeapWrap) {
             this.segmentTld = new SegmentTld();
             this.pagesFreeDirect = new Page[PAGES_FREE_DIRECT_ARRAY_SIZE + 1];
             Arrays.fill(pagesFreeDirect, EMPTY_PAGE);
             this.allocator = allocator;
             this.threadDelayedFreeList = new AtomicReference<>();
-            this.sharedLock = sharedLock;
+            this.sharedHeapWrap = sharedHeapWrap;
             this.miBufLocalDeque = new ArrayDequeBounded<>(1024);
             this.miBufCrossThreadsQueue = PlatformDependent.newFixedMpscQueue(1024);
             this.delayedBlockDeque = PlatformDependent.newFixedMpmcQueue(1024);
@@ -2120,31 +2148,30 @@ final class MiMallocByteBufAllocator {
         // so the `ownerHeap` must not have been abandoned, so `ownerHeap` must not be null,
         // and the segment must not be a huge segment.
         if (segment.ownerThreadId == Thread.currentThread().getId()) {
-            final StampedLock lock = ownerHeap.sharedLock;
-            if (lock == null) {
+            final SharedHeapWrap sharedHeapWrap = ownerHeap.sharedHeapWrap;
+            if (sharedHeapWrap == null) {
                 // Event loop local free.
                 freeLocal(page, block, buf, ownerHeap);
             } else {
                 // Allocation and deallocation are likely happens in the same thread.
                 // We acquire the lock exclusively on the shared deallocation path to improve memory reuse.
-                final long lockStamp = lock.writeLock();
+                sharedHeapWrap.lock();
                 try {
                     // Successfully acquired the lock, use local free.
                     freeLocal(page, block, buf, ownerHeap);
                 } finally {
-                    lock.unlockWrite(lockStamp);
+                    sharedHeapWrap.unlock();
                 }
             }
         } else {
-            StampedLock sharedLock;
-            long lockStamp;
-            if (!page.isHuge && ownerHeap != null && (sharedLock = ownerHeap.sharedLock) != null
-                    && (lockStamp = sharedLock.tryWriteLock()) != 0) {
+            SharedHeapWrap sharedHeapWrap;
+            if (!page.isHuge && ownerHeap != null && (sharedHeapWrap = ownerHeap.sharedHeapWrap) != null
+                    && sharedHeapWrap.tryLock()) {
                 try {
                     // Successfully acquired the lock, use local free.
                     freeLocal(page, block, buf, ownerHeap);
                 } finally {
-                    sharedLock.unlockWrite(lockStamp);
+                    sharedHeapWrap.unlock();
                 }
             } else {
                 // Use the generic multi-threaded-free path.
@@ -2295,24 +2322,21 @@ final class MiMallocByteBufAllocator {
                 int mask = currentHeapsScanLength - 1;
                 int index = (int) (threadId & mask);
                 SharedHeapWrap sharedHeapWrap;
-                StampedLock lock;
-                long lockStamp;
                 ableExpansion = currentHeapsScanLength < maxSharedHeapWrapsLengthParam;
                 int attempts = ableExpansion ? Math.min(currentHeapsScanLength << 1, MAX_SHARED_HEAP_LOCK_SPIN_COUNT) :
                         MAX_SHARED_HEAP_LOCK_SPIN_COUNT;
                 for (int i = 0; i < attempts; i++) {
                     sharedHeapWrap = this.sharedHeapWraps[index + i & mask];
-                    lock = sharedHeapWrap.lock;
-                    if ((lockStamp = lock.tryWriteLock()) != 0) {
+                    if (sharedHeapWrap.tryLock()) {
                         // Was able to allocate.
                         try {
                             LocalHeap heap = sharedHeapWrap.heap;
                             if (heap == null) {
-                                heap = sharedHeapWrap.heap = new LocalHeap(this, lock);
+                                heap = sharedHeapWrap.heap = new LocalHeap(this, sharedHeapWrap);
                             }
                             return allocate(size, maxCapacity, byteBuf, isReAlloc, heap);
                         } finally {
-                            lock.unlockWrite(lockStamp);
+                            sharedHeapWrap.unlock();
                         }
                     }
                     if (!ableExpansion) { // signals heavy contention.
