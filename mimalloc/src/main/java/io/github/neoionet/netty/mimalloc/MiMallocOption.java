@@ -103,7 +103,8 @@ public final class MiMallocOption {
 
     public enum HeapStrategy {
         /**
-         * Default: EventLoop threads use thread-local heaps, non-eventLoop threads use shared heaps.
+         * Default: threads that clean up their FastThreadLocals when they exit (FastThreadLocalThreads, such as
+         * the event loop threads) use thread-local heaps; other threads use shared heaps.
          */
         AUTO,
         /**
