@@ -1628,8 +1628,8 @@ final class MiMallocByteBufAllocator {
         }
 
         // Rare: the local deque is empty.
-        // Moves up to a batch of buffers from the cross-thread queue to the local deque,
-        // or creates a batch if that queue is empty, so that this runs once per batch rather than once per allocation.
+        // Moves up to a batch of buffers from the cross-thread queue to the local deque, or, for a thread-local heap,
+        // creates a batch if that queue is empty, so that this runs once per batch rather than once per allocation.
         // Being rare, its call site stays cold for the JIT,
         // which then does not inline this into the allocation fast path.
         private MiByteBuf getMiByteBufSlow() {
@@ -1645,9 +1645,15 @@ final class MiMallocByteBufAllocator {
                 }
                 return buf;
             }
-            // Fill `miBufLocalDeque` with `new MiByteBuf()`.
-            for (int i = 1; i < MI_BUF_REFILL_BATCH; i++) {
-                miBufLocalDeque.offerFirst(new MiByteBuf());
+            if (sharedHeapWrap == null) {
+                // Thread-local heap: the buffers of a batch are all used by this thread,
+                // so they may be contiguous in memory.
+                // A shared heap creates them one at a time instead:
+                // the contiguous buffers of one batch would be taken by different threads,
+                // which would then write to the same cache lines.
+                for (int i = 1; i < MI_BUF_REFILL_BATCH; i++) {
+                    miBufLocalDeque.offerFirst(new MiByteBuf());
+                }
             }
             return new MiByteBuf();
         }
