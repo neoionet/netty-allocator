@@ -404,6 +404,7 @@ final class MiMallocByteBufAllocator {
         private OutOfMemoryError lastOutOfMemoryError;
         private final ArrayDequeBounded<int[]> cachePool;
         private long lastHeapNormalCollectNano = System.nanoTime();
+        private static final int MI_BUF_REFILL_BATCH = 32;
 
         LocalHeap(MiMallocByteBufAllocator allocator, SharedHeapWrap sharedHeapWrap) {
             this.segmentTld = new SegmentTld();
@@ -1623,13 +1624,32 @@ final class MiMallocByteBufAllocator {
 
         private MiByteBuf getMiByteBuf() {
             MiByteBuf buf = this.miBufLocalDeque.pollFirst();
-            if (buf == null) {
-                buf = this.miBufCrossThreadsQueue.poll();
+            return buf != null ? buf : getMiByteBufSlow();
+        }
+
+        // Rare: the local deque is empty.
+        // Moves up to a batch of buffers from the cross-thread queue to the local deque,
+        // or creates a batch if that queue is empty, so that this runs once per batch rather than once per allocation.
+        // Being rare, its call site stays cold for the JIT,
+        // which then does not inline this into the allocation fast path.
+        private MiByteBuf getMiByteBufSlow() {
+            MiByteBuf buf = miBufCrossThreadsQueue.poll();
+            if (buf != null) {
+                // Drain `miBufCrossThreadsQueue` to `miBufLocalDeque`.
+                for (int i = 1; i < MI_BUF_REFILL_BATCH; i++) {
+                    MiByteBuf next = miBufCrossThreadsQueue.poll();
+                    if (next == null) {
+                        break;
+                    }
+                    miBufLocalDeque.offerFirst(next);
+                }
+                return buf;
             }
-            if (buf == null) {
-                buf = new MiByteBuf();
+            // Fill `miBufLocalDeque` with `new MiByteBuf()`.
+            for (int i = 1; i < MI_BUF_REFILL_BATCH; i++) {
+                miBufLocalDeque.offerFirst(new MiByteBuf());
             }
-            return buf;
+            return new MiByteBuf();
         }
     }
 
@@ -2281,12 +2301,20 @@ final class MiMallocByteBufAllocator {
      * Allocate into the given buffer. Used by {@link MiByteBuf#capacity(int)}.
      */
     void reallocate(int size, int maxCapacity, MiByteBuf into) {
-        MiByteBuf result = allocate(size, maxCapacity, into, true);
+        MiByteBuf result;
+        if (isThreadLocalAllocation()) {
+            result = allocate(size, maxCapacity, into, true, THREAD_LOCAL_HEAP.get());
+        } else {
+            result = allocateShared(size, maxCapacity, into, true);
+        }
         assert result == into: "Re-allocation created separate buffer instance";
     }
 
     ByteBuf allocate(int size, int maxCapacity) {
-        return allocate(size, maxCapacity, null, false);
+        if (isThreadLocalAllocation()) {
+            return allocate(size, maxCapacity, null, false, THREAD_LOCAL_HEAP.get());
+        }
+        return allocateShared(size, maxCapacity, null, false);
     }
 
     private boolean isThreadLocalAllocation() {
@@ -2298,14 +2326,6 @@ final class MiMallocByteBufAllocator {
             case AUTO:
             default:
                 return FastThreadLocalThread.currentThreadWillCleanupFastThreadLocals();
-        }
-    }
-
-    private MiByteBuf allocate(int size, int maxCapacity, MiByteBuf byteBuf, boolean isReAlloc) {
-        if (isThreadLocalAllocation()) {
-            return allocate(size, maxCapacity, byteBuf, isReAlloc, THREAD_LOCAL_HEAP.get());
-        } else {
-            return allocateShared(size, maxCapacity, byteBuf, isReAlloc);
         }
     }
 
@@ -2379,19 +2399,15 @@ final class MiMallocByteBufAllocator {
         return block;
     }
 
+    // The fast path is kept small on purpose: C2 does not inline a method whose compiled code exceeds
+    // `InlineSmallCode`, and when this one is not inlined, every allocation pays for a few
+    // extra calls. So the rare cases are kept out of it: sizes above the direct array go through
+    // `fastPageAboveDirect`, and an empty buffer deque is refilled in batches by `getMiByteBufSlow`,
+    // whose call site then stays cold.
     private MiByteBuf allocate(int size, int maxCapacity, MiByteBuf byteBuf, boolean isReAlloc, LocalHeap heap) {
-        Page page;
-        if (size <= PAGES_FREE_DIRECT_SIZE_MAX) {
-            page = heap.pagesFreeDirect[toWordSize(size)];
-        } else if (size <= MEDIUM_BLOCK_SIZE_MAX) {
-            // Sizes above the direct array: take the first page of the size class queue,
-            // so these sizes skip the generic path while it has free blocks.
-            // The fast allocation quota still sends them through the generic path regularly for its collection work.
-            Page first = heap.pageQueues[pageQueueIndex(size)].firstPage;
-            page = first != null ? first : EMPTY_PAGE;
-        } else {
-            return allocateGeneric(size, maxCapacity, byteBuf, heap, isReAlloc);
-        }
+        Page page = size <= PAGES_FREE_DIRECT_SIZE_MAX
+                ? heap.pagesFreeDirect[toWordSize(size)]
+                : fastPageAboveDirect(heap, size);
         if (page.fastAllocQuota > 0) {
             // Fast path
             int block = page.cachePop();
@@ -2411,6 +2427,20 @@ final class MiMallocByteBufAllocator {
             }
         }
         return allocateGeneric(size, maxCapacity, byteBuf, heap, isReAlloc);
+    }
+
+    // Sizes above the direct array: the first page of the size class queue, so these sizes skip the generic path while
+    // it has free blocks (the fast allocation quota still sends them through it regularly for its collection work).
+    // Sizes above the medium block size, and empty queues, get EMPTY_PAGE,
+    // whose quota of 0 sends them to the generic path.
+    private static Page fastPageAboveDirect(LocalHeap heap, int size) {
+        if (size <= MEDIUM_BLOCK_SIZE_MAX) {
+            Page first = heap.pageQueues[pageQueueIndex(size)].firstPage;
+            if (first != null) {
+                return first;
+            }
+        }
+        return EMPTY_PAGE;
     }
 
     // Only used for assertion.
