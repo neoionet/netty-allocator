@@ -379,7 +379,32 @@ final class MiMallocByteBufAllocator {
         }
     }
 
-    static final class LocalHeap {
+    // The paddings before the fields of `LocalHeap` (`LocalHeapPadBefore`) and after them (in `LocalHeap` itself) keep
+    // other objects off their cache lines. The heap is allocated wherever its creating thread allocates at the time,
+    // and the GC may move other objects next to it. An object written often by another thread (it was the tail of a
+    // buffer array of the benchmark) then shares a cache line with the fields that every allocation and free on the
+    // heap reads, and a shared heap is used by several threads. The fields of a superclass are laid out before those
+    // of its subclasses, so the paddings are in classes of their own rather than among the fields.
+    private abstract static class LocalHeapPadBefore {
+        byte b000,b001,b002,b003,b004,b005,b006,b007;//  8b
+        byte b010,b011,b012,b013,b014,b015,b016,b017;// 16b
+        byte b020,b021,b022,b023,b024,b025,b026,b027;// 24b
+        byte b030,b031,b032,b033,b034,b035,b036,b037;// 32b
+        byte b040,b041,b042,b043,b044,b045,b046,b047;// 40b
+        byte b050,b051,b052,b053,b054,b055,b056,b057;// 48b
+        byte b060,b061,b062,b063,b064,b065,b066,b067;// 56b
+        byte b070,b071,b072,b073,b074,b075,b076,b077;// 64b
+        byte b100,b101,b102,b103,b104,b105,b106,b107;// 72b
+        byte b110,b111,b112,b113,b114,b115,b116,b117;// 80b
+        byte b120,b121,b122,b123,b124,b125,b126,b127;// 88b
+        byte b130,b131,b132,b133,b134,b135,b136,b137;// 96b
+        byte b140,b141,b142,b143,b144,b145,b146,b147;//104b
+        byte b150,b151,b152,b153,b154,b155,b156,b157;//112b
+        byte b160,b161,b162,b163,b164,b165,b166,b167;//120b
+//        byte b170,b171,b172,b173,b174,b175,b176,b177;//128b
+    }
+
+    abstract static class LocalHeapFields extends LocalHeapPadBefore {
         final SegmentTld segmentTld;
         int pageCount; // total number of pages in the `pages` queues.
         int genericCount; // how often is `allocateGeneric` called
@@ -389,24 +414,21 @@ final class MiMallocByteBufAllocator {
         final PageQueue[] pageQueues;
         final MiMallocByteBufAllocator allocator;
         final AtomicReference<DelayedBlock> threadDelayedFreeList;
-        private static final byte VISIT_TYPE_PAGE_MARK = 0;
-        private static final byte VISIT_TYPE_PAGE_COLLECT = 1;
 
-        private final ArrayDequeBounded<Segment> reservedNormalSegmentDeque;
-        private int coldReservedSegmentCount;
-        private long lastSegmentsDecayNano = System.nanoTime();
+        final ArrayDequeBounded<Segment> reservedNormalSegmentDeque;
+        int coldReservedSegmentCount;
+        long lastSegmentsDecayNano = System.nanoTime();
         // The wrap that holds this heap and its lock, or null if this is a thread-local heap.
-        private final SharedHeapWrap sharedHeapWrap;
-        private final ArrayDequeBounded<MiByteBuf> miBufLocalDeque;
-        private final Queue<MiByteBuf> miBufCrossThreadsQueue;
-        private final Queue<DelayedBlock> delayedBlockDeque;
+        final SharedHeapWrap sharedHeapWrap;
+        final ArrayDequeBounded<MiByteBuf> miBufLocalDeque;
+        final Queue<MiByteBuf> miBufCrossThreadsQueue;
+        final Queue<DelayedBlock> delayedBlockDeque;
         // Written by `newChunk(size, true)` and read by its caller within the same heap critical section.
-        private OutOfMemoryError lastOutOfMemoryError;
-        private final ArrayDequeBounded<int[]> cachePool;
-        private long lastHeapNormalCollectNano = System.nanoTime();
-        private static final int MI_BUF_REFILL_BATCH = 32;
+        OutOfMemoryError lastOutOfMemoryError;
+        final ArrayDequeBounded<int[]> cachePool;
+        long lastHeapNormalCollectNano = System.nanoTime();
 
-        LocalHeap(MiMallocByteBufAllocator allocator, SharedHeapWrap sharedHeapWrap) {
+        LocalHeapFields(MiMallocByteBufAllocator allocator, SharedHeapWrap sharedHeapWrap) {
             this.segmentTld = new SegmentTld();
             this.pagesFreeDirect = new Page[PAGES_FREE_DIRECT_ARRAY_SIZE + 1];
             Arrays.fill(pagesFreeDirect, EMPTY_PAGE);
@@ -452,6 +474,33 @@ final class MiMallocByteBufAllocator {
                     // Full queue
                     new PageQueue(MEDIUM_BLOCK_WORD_SIZE_MAX + 2, PAGE_QUEUE_BIN_FULL_INDEX)
             };
+        }
+    }
+
+    static final class LocalHeap extends LocalHeapFields {
+        byte b000,b001,b002,b003,b004,b005,b006,b007;//  8b
+        byte b010,b011,b012,b013,b014,b015,b016,b017;// 16b
+        byte b020,b021,b022,b023,b024,b025,b026,b027;// 24b
+        byte b030,b031,b032,b033,b034,b035,b036,b037;// 32b
+        byte b040,b041,b042,b043,b044,b045,b046,b047;// 40b
+        byte b050,b051,b052,b053,b054,b055,b056,b057;// 48b
+        byte b060,b061,b062,b063,b064,b065,b066,b067;// 56b
+        byte b070,b071,b072,b073,b074,b075,b076,b077;// 64b
+        byte b100,b101,b102,b103,b104,b105,b106,b107;// 72b
+        byte b110,b111,b112,b113,b114,b115,b116,b117;// 80b
+        byte b120,b121,b122,b123,b124,b125,b126,b127;// 88b
+        byte b130,b131,b132,b133,b134,b135,b136,b137;// 96b
+        byte b140,b141,b142,b143,b144,b145,b146,b147;//104b
+        byte b150,b151,b152,b153,b154,b155,b156,b157;//112b
+        byte b160,b161,b162,b163,b164,b165,b166,b167;//120b
+        byte b170,b171,b172,b173,b174,b175,b176,b177;//128b
+
+        private static final byte VISIT_TYPE_PAGE_MARK = 0;
+        private static final byte VISIT_TYPE_PAGE_COLLECT = 1;
+        private static final int MI_BUF_REFILL_BATCH = 32;
+
+        LocalHeap(MiMallocByteBufAllocator allocator, SharedHeapWrap sharedHeapWrap) {
+            super(allocator, sharedHeapWrap);
         }
 
         private void heapPageCollect(PageQueue pq, Page page, CollectType collectType) {
