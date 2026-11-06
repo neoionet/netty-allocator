@@ -20,6 +20,8 @@ import io.github.neoionet.netty.microbenchmark.data.LogUniformSizePattern;
 import io.github.neoionet.netty.microbenchmark.data.UniformPattern;
 import io.github.neoionet.netty.microbenchmark.data.WebSocketProxyPattern;
 import io.github.neoionet.netty.microbenchmark.data.ApiGatewayPattern;
+import io.github.neoionet.netty.microbenchmark.util.MemoryUtil;
+import io.github.neoionet.netty.microbenchmark.util.PaddingBefore;
 import io.netty.buffer.AdaptiveByteBufAllocator;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
@@ -45,16 +47,11 @@ import org.openjdk.jmh.runner.Runner;
 import org.openjdk.jmh.runner.RunnerException;
 import org.openjdk.jmh.runner.options.Options;
 import org.openjdk.jmh.runner.options.OptionsBuilder;
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Set;
 import java.util.SplittableRandom;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
-import java.util.stream.Stream;
 
 /**
  * This is a modified portion of `io.netty.microbench.buffer.ByteBufAllocatorAllocPatternBenchmark`
@@ -68,8 +65,6 @@ import java.util.stream.Stream;
 @Fork(value = 1, jvmArgs = {
         "-server",
         "-dsa", "-da",
-        "-XX:InitialRAMPercentage=40.0",
-        "-XX:MaxRAMPercentage=40.0",
         "-Dio.netty.leakDetection.level=disabled",
         "-Djmh.executor=CUSTOM",
         "-Djmh.executor.class=io.github.neoionet.netty.microbenchmark.executor.FastThreadLocalThreadHarnessExecutor"
@@ -146,7 +141,7 @@ public class ByteBufAllocatorAllocPatternBenchmark {
     public static Set<BenchmarkParams> benchParamsSet = ConcurrentHashMap.newKeySet();
 
     @State(Scope.Thread)
-    public static class AllocationPatternState {
+    public static class AllocationPatternState extends PaddingBefore {
         private int[] releaseIndexes;
         private int[] sizes;
         private int nextReleaseIndex;
@@ -269,8 +264,8 @@ public class ByteBufAllocatorAllocPatternBenchmark {
         }
 
         private static void printProcRSS() throws Exception {
-            System.out.println("cRSS-pRSS:[" + ProcessMemoryUtil.getSelfRssKb() / 1024 + ", " +
-                    ProcessMemoryUtil.getSelfPeakRssKb() / 1024 + "]");
+            System.out.println("cRSS-pRSS:[" + MemoryUtil.getSelfRssKb() / 1024 + ", " +
+                    MemoryUtil.getSelfPeakRssKb() / 1024 + "]");
         }
 
         private void printUsedMemory(BenchmarkParams benchmarkParams) throws Exception {
@@ -318,11 +313,13 @@ public class ByteBufAllocatorAllocPatternBenchmark {
     }
 
     @Benchmark
+    @Fork(jvmArgsAppend = {"-Xms4g", "-Xmx4g", "-XX:MaxDirectMemorySize=16g", "-XX:+AlwaysPreTouch"})
     public void directAllocation(AllocationPatternState state) {
         state.performDirectAllocation();
     }
 
     @Benchmark
+    @Fork(jvmArgsAppend = {"-Xms16g", "-Xmx16g", "-XX:MaxDirectMemorySize=1g", "-XX:+ExitOnOutOfMemoryError"})
     public void heapAllocation(AllocationPatternState state) {
         state.performHeapAllocation();
     }
@@ -332,37 +329,5 @@ public class ByteBufAllocatorAllocPatternBenchmark {
                 .include(ByteBufAllocatorAllocPatternBenchmark.class.getSimpleName())
                 .build();
         new Runner(opt).run();
-    }
-
-    private static final class ProcessMemoryUtil {
-
-        private ProcessMemoryUtil() {}
-
-        static long getSelfRssKb() {
-            return readField("VmRSS:");
-        }
-
-        static long getSelfPeakRssKb() {
-            return readField("VmHWM:");
-        }
-
-        private static long readField(String prefix) {
-            Path statusPath = Paths.get("/proc/self/status");
-            try (Stream<String> lines = Files.lines(statusPath)) {
-                return lines
-                        .filter(line -> line.startsWith(prefix))
-                        .findFirst()
-                        .map(ProcessMemoryUtil::parseKbLine)
-                        .orElseThrow(() -> new IllegalStateException(prefix + " not found in /proc/self/status"));
-            } catch (IOException e) {
-                System.err.println("Failed to read /proc/self/status");
-            }
-            return -1;
-        }
-
-        private static long parseKbLine(String line) {
-            String[] parts = line.trim().split("\\s+");
-            return Long.parseLong(parts[1]);
-        }
     }
 }
