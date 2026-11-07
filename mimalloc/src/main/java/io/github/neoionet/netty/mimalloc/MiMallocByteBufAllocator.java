@@ -27,12 +27,14 @@ import java.util.Arrays;
 import java.util.Locale;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
 
 import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.CollectType.ABANDON;
 import static io.github.neoionet.netty.mimalloc.MiMallocByteBufAllocator.CollectType.FORCE;
@@ -241,20 +243,48 @@ final class MiMallocByteBufAllocator {
     }
 
     private abstract static class SharedHeapWrapValue extends SharedHeapWrapLhsPadding {
-        // The lock of the shared heap: 0 if free, 1 if held. It is a field here, between the paddings of the wrap,
+        // The lock of the shared heap, states below. It is a field here, between the paddings of the wrap,
         // rather than a lock object of its own: it is written at every allocation and free on the heap, and a
         // separate lock object (it was a StampedLock) is placed anywhere by the GC, for example right after the
         // allocator or `heapsScanLength`, which every thread reads at every allocation; all the threads were then
         // slowed by the cache line moving between the cores.
+        // 0: free; 1: held; 3: free, but handed off to the first waiter: only it may take the lock,
+        // or any waiter once `LOCK_HANDOFF_TIMEOUT_NANOS` has passed since the hand-off.
         volatile int lockState;
+        // How many threads wait in `lock()`. Read by every `unlock()`: it shares the cache line of `lockState`,
+        // which the unlocking thread holds anyway, and is only written when the lock is contended.
+        volatile int waiterCount;
+        // When `unlock()` last handed the lock off: written just before `lockState` is set to 3, and only read by a
+        // waiter that saw 3, so it is never read before its first write.
+        volatile long handoffNanos;
         LocalHeap heap;
+        // The threads waiting in `lock()`, oldest first. The reference is final and never written again, so it does
+        // not move a cache line; the queue itself is only touched when the lock is contended.
+        final ConcurrentLinkedQueue<LockWaiter> waiters = new ConcurrentLinkedQueue<>();
+    }
+
+    private static final class LockWaiter {
+        final Thread thread = Thread.currentThread();
+        final long sinceNanos = System.nanoTime();
     }
 
     private static final class SharedHeapWrap extends SharedHeapWrapValue {
         private static final AtomicIntegerFieldUpdater<SharedHeapWrapValue> LOCK_STATE_UPDATER =
                 AtomicIntegerFieldUpdater.newUpdater(SharedHeapWrapValue.class, "lockState");
-        // How many times `lock()` retries before it yields: the lock is only held for one allocation or free.
+        private static final AtomicIntegerFieldUpdater<SharedHeapWrapValue> WAITER_COUNT_UPDATER =
+                AtomicIntegerFieldUpdater.newUpdater(SharedHeapWrapValue.class, "waiterCount");
+        // How many times `lock()` retries before it parks: the lock is only held for one allocation or free.
         private static final int LOCK_SPINS = 100;
+        // How long the first waiter may wait before `unlock()` hands the lock to it rather than releasing it.
+        private static final long LOCK_HANDOFF_NANOS = TimeUnit.MILLISECONDS.toNanos(1);
+        // How long a handed-off lock waits for the first waiter before any waiter may take it.
+        // Well above the time a woken thread takes to run when there are more runnable threads than CPUs,
+        // so that it does not undo normal hand-offs.
+        private static final long LOCK_HANDOFF_TIMEOUT_NANOS = TimeUnit.MILLISECONDS.toNanos(50);
+        // How long a waiter parks before it looks at the lock again. `unlock()` wakes the first waiter, but an
+        // `unlock()` that read `waiterCount` just before a thread started to wait does not: that thread then takes
+        // the lock after at most this long. Rare, as the window is a few instructions wide.
+        private static final long LOCK_PARK_NANOS = TimeUnit.MILLISECONDS.toNanos(10);
 
         // Borrowed from JCTools.
         byte b000,b001,b002,b003,b004,b005,b006,b007;//  8b
@@ -279,19 +309,93 @@ final class MiMallocByteBufAllocator {
             return lockState == 0 && LOCK_STATE_UPDATER.compareAndSet(this, 0, 1);
         }
 
-        // Acquires the lock, spinning, then yielding, until it is free.
+        // Acquires the lock: spins a little, as the lock is only held for one allocation or free, then parks until
+        // `unlock()` wakes it (or `LOCK_PARK_NANOS` passes).
+        // Parking gives the CPU to the holder, which matters when there are more runnable
+        // threads than CPUs: `Thread.yield()` does not, and could cost a whole scheduler round per attempt.
         void lock() {
-            int spins = 0;
-            while (!tryLock()) {
-                if (++spins >= LOCK_SPINS) {
-                    Thread.yield();
+            for (int i = 0; i < LOCK_SPINS; i++) {
+                if (tryLock()) {
+                    return;
+                }
+            }
+            lockSlow();
+        }
+
+        private void lockSlow() {
+            boolean interrupted = false;
+            final LockWaiter waiter = new LockWaiter();
+            waiters.offer(waiter);
+            // An atomic increment,
+            // so that the state is read below only after it:
+            // an `unlock()` that reads the count after this wakes the first waiter;
+            // an `unlock()` that read it just before may release the lock without waking anyone,
+            // and this thread then sees the release at its next look, after `LOCK_PARK_NANOS` at most.
+            WAITER_COUNT_UPDATER.incrementAndGet(this);
+            try {
+                for (;;) {
+                    int state = lockState;
+                    if (state == 0) {
+                        if (LOCK_STATE_UPDATER.compareAndSet(this, 0, 1)) {
+                            return;
+                        }
+                        continue;
+                    }
+                    // Handed off: only the first waiter may take it, unless it has not done so for
+                    // `LOCK_HANDOFF_TIMEOUT_NANOS`
+                    // (its thread may not get to run, for example a pinned virtual thread).
+                    if (state == 3
+                            && (waiters.peek() == waiter
+                            || System.nanoTime() - handoffNanos > LOCK_HANDOFF_TIMEOUT_NANOS)
+                            && LOCK_STATE_UPDATER.compareAndSet(this, 3, 1)) {
+                        return;
+                    }
+                    // The lock is held (1), or handed off (3) to another waiter:
+                    // wait until `unlock()` wakes this thread, or until `LOCK_PARK_NANOS` passes.
+                    LockSupport.parkNanos(this, LOCK_PARK_NANOS);
+                    // `parkNanos` returns at once while the interrupt flag is set:
+                    // clear it here, and restore it in `finally`.
+                    if (Thread.interrupted()) {
+                        interrupted = true;
+                    }
+                }
+            } finally {
+                WAITER_COUNT_UPDATER.decrementAndGet(this);
+                waiters.remove(waiter);
+                if (interrupted) {
+                    waiter.thread.interrupt();
                 }
             }
         }
 
         void unlock() {
-            // A release store: the writes made under the lock are visible to the next thread that acquires it.
-            LOCK_STATE_UPDATER.lazySet(this, 0);
+            if (waiterCount == 0) {
+                // Uncontended: a release store, the writes made under the lock are visible to the next thread that
+                // acquires it. A thread that starts to wait right now, after the count was read, is not woken, and
+                // looks at the lock again after `LOCK_PARK_NANOS`.
+                LOCK_STATE_UPDATER.lazySet(this, 0);
+                return;
+            }
+            unlockSlow();
+        }
+
+        private void unlockSlow() {
+            final LockWaiter first = waiters.peek();
+            long now;
+            if (first != null && (now = System.nanoTime()) - first.sinceNanos > LOCK_HANDOFF_NANOS) {
+                // The first waiter has waited too long:
+                // hand the lock to it, so that spinning threads cannot keep taking it first (eventual fairness).
+                // `handoffNanos` is written before `lockState`: a waiter that sees 3 also sees it.
+                handoffNanos = now;
+                lockState = 3;
+                LockSupport.unpark(first.thread);
+                return;
+            }
+            // Release it and wake the first waiter; a spinning thread may still take it first.
+            lockState = 0;
+            if (first != null) {
+                LockSupport.unpark(first.thread);
+            }
         }
     }
 
@@ -2385,7 +2489,7 @@ final class MiMallocByteBufAllocator {
     }
 
     private MiByteBuf allocateShared(int size, int maxCapacity, MiByteBuf byteBuf, boolean isReAlloc) {
-        int goodAllocSize = 0;
+        int goodAllocSize;
         if (size <= MEDIUM_BLOCK_SIZE_MAX ||
                 (goodAllocSize = getGoodOsAllocSize(size)) <= largeBlockSizeMaxParam) { // If not huge.
             long threadId = Thread.currentThread().getId();
@@ -2405,26 +2509,43 @@ final class MiMallocByteBufAllocator {
                     if (sharedHeapWrap.tryLock()) {
                         // Was able to allocate.
                         try {
-                            LocalHeap heap = sharedHeapWrap.heap;
-                            if (heap == null) {
-                                heap = sharedHeapWrap.heap = new LocalHeap(this, sharedHeapWrap);
-                            }
-                            return allocate(size, maxCapacity, byteBuf, isReAlloc, heap);
+                            return allocate(size, maxCapacity, byteBuf, isReAlloc, sharedHeapOf(sharedHeapWrap));
                         } finally {
                             sharedHeapWrap.unlock();
                         }
                     }
-                    if (!ableExpansion) { // signals heavy contention.
-                        Thread.yield(); // yield to improve progression.
-                    }
                 }
             } while (ableExpansion && ++expansions <= 3 && tryExpandHeapsScanLength(currentHeapsScanLength));
+            // Every heap tried was held: there are no more heaps to add, or this call added as many as it may.
+            // Wait for this thread's own heap, in the heaps now scanned. `lock()` parks, which leaves the CPU to the
+            // holders; yielding after every failed attempt instead could cost a scheduler round per attempt when
+            // there are more runnable threads than CPUs.
+            return allocateSync(size, maxCapacity, byteBuf, isReAlloc, threadId);
         }
         assert this.sharedHeapWraps[0] != null && this.sharedHeapWraps[0].heap != null;
         LocalHeap heap = this.sharedHeapWraps[0].heap;
-        // If it is a huge size, or failed to acquire the shared heap lock.
-        goodAllocSize = goodAllocSize > 0 ? goodAllocSize : getGoodOsAllocSize(size);
+        // A huge size (`goodAllocSize` was computed in the check above): allocated on its own.
         return allocateFallback(size, goodAllocSize, maxCapacity, byteBuf, heap, isReAlloc);
+    }
+
+    // Waits for this thread's own heap: used once every heap tried was held.
+    private MiByteBuf allocateSync(int size, int maxCapacity, MiByteBuf byteBuf, boolean isReAlloc, long threadId) {
+        SharedHeapWrap sharedHeapWrap = this.sharedHeapWraps[(int) (threadId & (this.heapsScanLength.get() - 1))];
+        sharedHeapWrap.lock();
+        try {
+            return allocate(size, maxCapacity, byteBuf, isReAlloc, sharedHeapOf(sharedHeapWrap));
+        } finally {
+            sharedHeapWrap.unlock();
+        }
+    }
+
+    // Caller holds the lock of `sharedHeapWrap`.
+    private LocalHeap sharedHeapOf(SharedHeapWrap sharedHeapWrap) {
+        LocalHeap heap = sharedHeapWrap.heap;
+        if (heap == null) {
+            heap = sharedHeapWrap.heap = new LocalHeap(this, sharedHeapWrap);
+        }
+        return heap;
     }
 
     private boolean tryExpandHeapsScanLength(int currentHeapsScanLength) {
