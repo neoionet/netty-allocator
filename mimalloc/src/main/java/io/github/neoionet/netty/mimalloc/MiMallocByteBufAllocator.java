@@ -243,19 +243,18 @@ final class MiMallocByteBufAllocator {
     }
 
     private abstract static class SharedHeapWrapValue extends SharedHeapWrapLhsPadding {
-        // The lock of the shared heap, states below. It is a field here, between the paddings of the wrap,
-        // rather than a lock object of its own: it is written at every allocation and free on the heap, and a
-        // separate lock object (it was a StampedLock) is placed anywhere by the GC, for example right after the
+        // The lock of the shared heap: `LOCK_FREE`, `LOCK_HELD` or `LOCK_HANDED_OFF`, see `SharedHeapWrap`. It is a
+        // field here, between the paddings of the wrap, rather than a lock object of its own:
+        // it is written at every allocation and free on the heap,
+        // and a separate lock object (it was a StampedLock) is placed anywhere by the GC, for example right after the
         // allocator or `heapsScanLength`, which every thread reads at every allocation; all the threads were then
         // slowed by the cache line moving between the cores.
-        // 0: free; 1: held; 3: free, but handed off to the first waiter: only it may take the lock,
-        // or any waiter once `LOCK_HANDOFF_TIMEOUT_NANOS` has passed since the hand-off.
         volatile int lockState;
         // How many threads wait in `lock()`. Read by every `unlock()`: it shares the cache line of `lockState`,
         // which the unlocking thread holds anyway, and is only written when the lock is contended.
         volatile int waiterCount;
-        // When `unlock()` last handed the lock off: written just before `lockState` is set to 3, and only read by a
-        // waiter that saw 3, so it is never read before its first write.
+        // When `unlock()` last handed the lock off: written just before `lockState` is set to `LOCK_HANDED_OFF`,
+        // and only read by a waiter that saw it, so it is never read before its first write.
         volatile long handoffNanos;
         LocalHeap heap;
         // The threads waiting in `lock()`, oldest first, and at its head possibly some that took the lock since, which
@@ -290,6 +289,14 @@ final class MiMallocByteBufAllocator {
         // the lock after at most this long. Rare, as the window is a few instructions wide.
         private static final long LOCK_PARK_NANOS = TimeUnit.MILLISECONDS.toNanos(10);
 
+        // Nobody holds the lock: any thread may take it.
+        private static final int LOCK_FREE = 0;
+        // A thread holds the lock.
+        private static final int LOCK_HELD = 1;
+        // Free, but handed off to the first waiter: only it may take the lock, or any waiter once
+        // `LOCK_HANDOFF_TIMEOUT_NANOS` has passed since the hand-off.
+        private static final int LOCK_HANDED_OFF = 2;
+
         // Borrowed from JCTools.
         byte b000,b001,b002,b003,b004,b005,b006,b007;//  8b
         byte b010,b011,b012,b013,b014,b015,b016,b017;// 16b
@@ -310,7 +317,7 @@ final class MiMallocByteBufAllocator {
 
         // Acquires the lock if it is free, without waiting.
         boolean tryLock() {
-            return lockState == 0 && LOCK_STATE_UPDATER.compareAndSet(this, 0, 1);
+            return lockState == LOCK_FREE && LOCK_STATE_UPDATER.compareAndSet(this, LOCK_FREE, LOCK_HELD);
         }
 
         // Acquires the lock: spins a little, as the lock is only held for one allocation or free, then parks until
@@ -340,8 +347,8 @@ final class MiMallocByteBufAllocator {
             try {
                 for (;;) {
                     int state = lockState;
-                    if (state == 0) {
-                        if (LOCK_STATE_UPDATER.compareAndSet(this, 0, 1)) {
+                    if (state == LOCK_FREE) {
+                        if (LOCK_STATE_UPDATER.compareAndSet(this, LOCK_FREE, LOCK_HELD)) {
                             return;
                         }
                         continue;
@@ -349,13 +356,13 @@ final class MiMallocByteBufAllocator {
                     // Handed off: only the first waiter may take it, unless it has not done so for
                     // `LOCK_HANDOFF_TIMEOUT_NANOS`
                     // (its thread may not get to run, for example a pinned virtual thread).
-                    if (state == 3
+                    if (state == LOCK_HANDED_OFF
                             && (waiters.peek() == waiter
                             || System.nanoTime() - handoffNanos > LOCK_HANDOFF_TIMEOUT_NANOS)
-                            && LOCK_STATE_UPDATER.compareAndSet(this, 3, 1)) {
+                            && LOCK_STATE_UPDATER.compareAndSet(this, LOCK_HANDED_OFF, LOCK_HELD)) {
                         return;
                     }
-                    // The lock is held (1), or handed off (3) to another waiter:
+                    // The lock is held, or handed off to another waiter:
                     // wait until `unlock()` wakes this thread, or until `LOCK_PARK_NANOS` passes.
                     LockSupport.parkNanos(this, LOCK_PARK_NANOS);
                     // `parkNanos` returns at once while the interrupt flag is set:
@@ -380,7 +387,7 @@ final class MiMallocByteBufAllocator {
                 // Uncontended: a release store, the writes made under the lock are visible to the next thread that
                 // acquires it. A thread that starts to wait right now, after the count was read, is not woken, and
                 // looks at the lock again after `LOCK_PARK_NANOS`.
-                LOCK_STATE_UPDATER.lazySet(this, 0);
+                LOCK_STATE_UPDATER.lazySet(this, LOCK_FREE);
                 return;
             }
             unlockSlow();
@@ -395,14 +402,14 @@ final class MiMallocByteBufAllocator {
             if (first != null && (now = System.nanoTime()) - first.sinceNanos > LOCK_HANDOFF_NANOS) {
                 // The first waiter has waited too long:
                 // hand the lock to it, so that spinning threads cannot keep taking it first (eventual fairness).
-                // `handoffNanos` is written before `lockState`: a waiter that sees 3 also sees it.
+                // `handoffNanos` is written before `lockState`: a waiter that sees `LOCK_HANDED_OFF` also sees it.
                 handoffNanos = now;
-                lockState = 3;
+                lockState = LOCK_HANDED_OFF;
                 LockSupport.unpark(first.thread);
                 return;
             }
             // Release it and wake the first waiter; a spinning thread may still take it first.
-            lockState = 0;
+            lockState = LOCK_FREE;
             if (first != null) {
                 LockSupport.unpark(first.thread);
             }
