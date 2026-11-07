@@ -265,10 +265,11 @@ final class MiMallocByteBufAllocator {
     }
 
     private static final class LockWaiter {
-        final Thread thread = Thread.currentThread();
+        // The waiting thread, or null once it took the lock, `unlockSlow()` then drops this waiter from the head of
+        // `waiters`. Cleared rather than the waiter removed from the queue, which would walk the queue while the lock
+        // is held, and so that a waiter left queued after contention does not keep its thread reachable.
+        Thread thread = Thread.currentThread();
         final long sinceNanos = System.nanoTime();
-        // Set by the waiter once it took the lock; `unlockSlow()` then drops it from the head of `waiters` queue.
-        volatile boolean done;
     }
 
     private static final class SharedHeapWrap extends SharedHeapWrapValue {
@@ -328,6 +329,7 @@ final class MiMallocByteBufAllocator {
         private void lockSlow() {
             boolean interrupted = false;
             final LockWaiter waiter = new LockWaiter();
+            // Queued before it is counted: an `unlock()` that sees the count finds this waiter in `waiters`.
             waiters.offer(waiter);
             // An atomic increment,
             // so that the state is read below only after it:
@@ -364,9 +366,11 @@ final class MiMallocByteBufAllocator {
                 }
             } finally {
                 WAITER_COUNT_UPDATER.decrementAndGet(this);
-                waiter.done = true;
+                Thread thread = waiter.thread;
+                assert thread != null;
+                waiter.thread = null;
                 if (interrupted) {
-                    waiter.thread.interrupt();
+                    thread.interrupt();
                 }
             }
         }
@@ -384,7 +388,7 @@ final class MiMallocByteBufAllocator {
 
         private void unlockSlow() {
             LockWaiter first;
-            while ((first = waiters.peek()) != null && first.done) {
+            while ((first = waiters.peek()) != null && first.thread == null) {
                 waiters.poll();
             }
             long now;
@@ -2526,7 +2530,7 @@ final class MiMallocByteBufAllocator {
             // Wait for this thread's own heap, in the heaps now scanned. `lock()` parks, which leaves the CPU to the
             // holders; yielding after every failed attempt instead could cost a scheduler round per attempt when
             // there are more runnable threads than CPUs.
-            return allocateSync(size, maxCapacity, byteBuf, isReAlloc, threadId);
+            return allocateWaiting(size, maxCapacity, byteBuf, isReAlloc, threadId);
         }
         assert this.sharedHeapWraps[0] != null && this.sharedHeapWraps[0].heap != null;
         LocalHeap heap = this.sharedHeapWraps[0].heap;
@@ -2535,7 +2539,7 @@ final class MiMallocByteBufAllocator {
     }
 
     // Waits for this thread's own heap: used once every heap tried was held.
-    private MiByteBuf allocateSync(int size, int maxCapacity, MiByteBuf byteBuf, boolean isReAlloc, long threadId) {
+    private MiByteBuf allocateWaiting(int size, int maxCapacity, MiByteBuf byteBuf, boolean isReAlloc, long threadId) {
         SharedHeapWrap sharedHeapWrap = this.sharedHeapWraps[(int) (threadId & (this.heapsScanLength.get() - 1))];
         sharedHeapWrap.lock();
         try {
