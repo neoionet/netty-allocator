@@ -258,14 +258,17 @@ final class MiMallocByteBufAllocator {
         // waiter that saw 3, so it is never read before its first write.
         volatile long handoffNanos;
         LocalHeap heap;
-        // The threads waiting in `lock()`, oldest first. The reference is final and never written again, so it does
-        // not move a cache line; the queue itself is only touched when the lock is contended.
+        // The threads waiting in `lock()`, oldest first, and at its head possibly some that took the lock since, which
+        // `unlockSlow()` drops. The reference is final and never written again, so it does not move a cache line; the
+        // queue itself is only touched when the lock is contended.
         final ConcurrentLinkedQueue<LockWaiter> waiters = new ConcurrentLinkedQueue<>();
     }
 
     private static final class LockWaiter {
         final Thread thread = Thread.currentThread();
         final long sinceNanos = System.nanoTime();
+        // Set by the waiter once it took the lock; `unlockSlow()` then drops it from the head of `waiters` queue.
+        volatile boolean done;
     }
 
     private static final class SharedHeapWrap extends SharedHeapWrapValue {
@@ -361,7 +364,7 @@ final class MiMallocByteBufAllocator {
                 }
             } finally {
                 WAITER_COUNT_UPDATER.decrementAndGet(this);
-                waiters.remove(waiter);
+                waiter.done = true;
                 if (interrupted) {
                     waiter.thread.interrupt();
                 }
@@ -380,7 +383,10 @@ final class MiMallocByteBufAllocator {
         }
 
         private void unlockSlow() {
-            final LockWaiter first = waiters.peek();
+            LockWaiter first;
+            while ((first = waiters.peek()) != null && first.done) {
+                waiters.poll();
+            }
             long now;
             if (first != null && (now = System.nanoTime()) - first.sinceNanos > LOCK_HANDOFF_NANOS) {
                 // The first waiter has waited too long:
