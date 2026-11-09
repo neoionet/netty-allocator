@@ -2362,22 +2362,9 @@ final class MiMallocByteBufAllocator {
         // If `segment.ownerThreadId == Thread.currentThread().getId()`, means the current thread owns the `ownerHeap`,
         // so the `ownerHeap` must not have been abandoned, so `ownerHeap` must not be null,
         // and the segment must not be a huge segment.
-        if (segment.ownerThreadId == Thread.currentThread().getId()) {
-            final SharedHeapWrap sharedHeapWrap = ownerHeap.sharedHeapWrap;
-            if (sharedHeapWrap == null) {
-                // Event loop local free.
-                freeLocal(page, block, buf, ownerHeap);
-            } else {
-                // Allocation and deallocation are likely happens in the same thread.
-                // We acquire the lock exclusively on the shared deallocation path to improve memory reuse.
-                sharedHeapWrap.lock();
-                try {
-                    // Successfully acquired the lock, use local free.
-                    freeLocal(page, block, buf, ownerHeap);
-                } finally {
-                    sharedHeapWrap.unlock();
-                }
-            }
+        if (segment.ownerThreadId == Thread.currentThread().getId() && ownerHeap.sharedHeapWrap == null) {
+            // Event loop local free.
+            freeLocal(page, block, buf, ownerHeap);
         } else {
             SharedHeapWrap sharedHeapWrap;
             if (!page.isHuge && ownerHeap != null && (sharedHeapWrap = ownerHeap.sharedHeapWrap) != null
@@ -2525,7 +2512,7 @@ final class MiMallocByteBufAllocator {
     }
 
     private MiByteBuf allocateShared(int size, int maxCapacity, MiByteBuf byteBuf, boolean isReAlloc) {
-        int goodAllocSize;
+        int goodAllocSize = 0;
         if (size <= MEDIUM_BLOCK_SIZE_MAX ||
                 (goodAllocSize = getGoodOsAllocSize(size)) <= largeBlockSizeMaxParam) { // If not huge.
             long threadId = Thread.currentThread().getId();
@@ -2550,29 +2537,16 @@ final class MiMallocByteBufAllocator {
                             sharedHeapWrap.unlock();
                         }
                     }
+                    if (!ableExpansion && (i & 3) == 3) {
+                        Thread.yield();
+                    }
                 }
             } while (ableExpansion && ++expansions <= 3 && tryExpandHeapsScanLength(currentHeapsScanLength));
-            // Every heap tried was held: there are no more heaps to add, or this call added as many as it may.
-            // Wait for this thread's own heap, in the heaps now scanned. `lock()` parks, which leaves the CPU to the
-            // holders; yielding after every failed attempt instead could cost a scheduler round per attempt when
-            // there are more runnable threads than CPUs.
-            return allocateWaiting(size, maxCapacity, byteBuf, isReAlloc, threadId);
         }
         assert this.sharedHeapWraps[0] != null && this.sharedHeapWraps[0].heap != null;
         LocalHeap heap = this.sharedHeapWraps[0].heap;
-        // A huge size (`goodAllocSize` was computed in the check above): allocated on its own.
+        goodAllocSize = goodAllocSize > 0 ? goodAllocSize : getGoodOsAllocSize(size);
         return allocateFallback(size, goodAllocSize, maxCapacity, byteBuf, heap, isReAlloc);
-    }
-
-    // Waits for this thread's own heap: used once every heap tried was held.
-    private MiByteBuf allocateWaiting(int size, int maxCapacity, MiByteBuf byteBuf, boolean isReAlloc, long threadId) {
-        SharedHeapWrap sharedHeapWrap = this.sharedHeapWraps[(int) (threadId & (this.heapsScanLength.get() - 1))];
-        sharedHeapWrap.lock();
-        try {
-            return allocate(size, maxCapacity, byteBuf, isReAlloc, sharedHeapOf(sharedHeapWrap));
-        } finally {
-            sharedHeapWrap.unlock();
-        }
     }
 
     // Caller holds the lock of `sharedHeapWrap`.
