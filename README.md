@@ -123,10 +123,15 @@ b.group(group)
     *   **Default value:** `best`
 
 *   **`-Dio.github.neoionet.allocator.mimalloc.segment.size.mib`**
-    *   **Allowed Values:** `1`, `2`, `4`, `8`, `16`, `32`
+    *   **Allowed Values:** `1`, `2`, `4`, `8`, `16`, `32` (other values are rounded up to a power of two; values above `32` are clamped to `32` with a warning)
     *   **Description:** Sets the segment size in MiB.
     *   **Default value:** `4`
-  
+
+*   **`-Dio.github.neoionet.allocator.mimalloc.segment.cache.size.mib`**
+    *   **Allowed Values:** `0` to `1024` (values above `1024` are clamped to `1024` with a warning)
+    *   **Description:** Sets how much memory of free segments each heap keeps for reuse, in MiB. The limit applies to **each heap**, so the memory kept can reach this value times the number of heaps. Any value above `0` keeps at least one segment; `0` keeps none.
+    *   **Default value:** `128`
+
 * **`-Dio.github.neoionet.allocator.mimalloc.maxSharedHeaps`**
     *   **Description:** Sets the max shared heaps count.
     *   **Default value:** `NettyRuntime.availableProcessors() * 4`
@@ -138,6 +143,7 @@ b.group(group)
                                          .heapStrategy(MiMallocOption.HeapStrategy.AUTO)
                                          .pageSearchStrategy(MiMallocOption.PageSearchStrategy.BEST)
                                          .segmentSizeInMiB(4)
+                                         .segmentCacheSizeInMiB(128)
                                          .maxSharedHeaps(16)
                                          .build();
 ```

@@ -34,8 +34,6 @@ public final class MiMallocOption {
 
     private static final int MAX_SEGMENT_SIZE_IN_MIB = 32;
 
-    // Free segments kept per heap: rounded up to a power of two, at most 1024; at least one segment
-    // is kept whatever the value. Raise it for live sets that swing by more than this per heap.
     private static final String SEGMENT_CACHE_SIZE_PROP_KEY =
             "io.github.neoionet.allocator.mimalloc.segment.cache.size.mib";
 
@@ -59,10 +57,10 @@ public final class MiMallocOption {
         return calculateSegmentSizeInBytes(Integer.parseInt(raw));
     }
 
-    // Free segments kept for reuse per heap, in MiB: at most 1024 MiB;
-    // at least one segment is kept whatever the value.
+    // Free segments kept for reuse per heap, in MiB, at most 1024; any value above 0 keeps at least one segment.
+    // 0 keeps none: every segment that becomes empty is freed, and a new one is allocated (and zeroed) when needed.
     static int calculateSegmentCacheSizeInBytes(int segmentCacheSizeInMiB) {
-        ObjectUtil.checkPositive(segmentCacheSizeInMiB, "segmentCacheSizeInMiB");
+        ObjectUtil.checkPositiveOrZero(segmentCacheSizeInMiB, "segmentCacheSizeInMiB");
         if (segmentCacheSizeInMiB > MAX_SEGMENT_CACHE_SIZE_IN_MIB) {
             logger.warn("segmentCacheSizeInMiB {} exceeds the maximum, using {}",
                     segmentCacheSizeInMiB, MAX_SEGMENT_CACHE_SIZE_IN_MIB);

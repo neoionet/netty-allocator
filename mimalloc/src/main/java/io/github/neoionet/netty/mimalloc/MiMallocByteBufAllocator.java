@@ -493,6 +493,8 @@ final class MiMallocByteBufAllocator {
         private final ArrayDeque<E> arrayDeque;
 
         public ArrayDequeBounded(int capacity) {
+            // A capacity of 0 keeps nothing: offerFirst() always fails, and the polls return null.
+            assert capacity >= 0;
             this.capacity = capacity;
             this.arrayDeque = new ArrayDeque<>(capacity);
         }
@@ -581,8 +583,8 @@ final class MiMallocByteBufAllocator {
             this.miBufCrossThreadsQueue = PlatformDependent.newFixedMpscQueue(1024);
             this.delayedBlockDeque = PlatformDependent.newFixedMpmcQueue(1024);
             this.cachePool = new ArrayDequeBounded<>(1024);
-            int maxReservedSegmentCount =
-                    Math.max(1, allocator.segmentCacheSizeInBytesParam / allocator.segmentSizeInBytesParam);
+            int maxReservedSegmentCount = allocator.segmentCacheSizeInBytesParam == 0 ? 0
+                    : Math.max(1, allocator.segmentCacheSizeInBytesParam / allocator.segmentSizeInBytesParam);
             this.reservedNormalSegmentDeque = new ArrayDequeBounded<>(maxReservedSegmentCount);
             this.pageQueues = new PageQueue[] {
                     new PageQueue(1, 0), // placeholder, not used.
