@@ -32,18 +32,47 @@ public final class MiMallocOption {
     // Default segment size in MiB.
     private static final int DEFAULT_SEGMENT_SIZE_IN_MIB = 4;
 
+    private static final int MAX_SEGMENT_SIZE_IN_MIB = 32;
+
+    // Free segments kept per heap: rounded up to a power of two, at most 1024; at least one segment
+    // is kept whatever the value. Raise it for live sets that swing by more than this per heap.
+    private static final String SEGMENT_CACHE_SIZE_PROP_KEY =
+            "io.github.neoionet.allocator.mimalloc.segment.cache.size.mib";
+
+    private static final int DEFAULT_SEGMENT_CACHE_SIZE_IN_MIB = 128;
+
+    private static final int MAX_SEGMENT_CACHE_SIZE_IN_MIB = 1024;
+
     // Allowed segment size: {1, 2, 4, 8, 16, 32} MiB.
     static int calculateSegmentSizeInBytes(int segmentSizeInMiB) {
         ObjectUtil.checkPositive(segmentSizeInMiB, "segmentSizeInMiB");
         int segmentMibNextPower2 = MathUtil.safeFindNextPositivePowerOfTwo(segmentSizeInMiB);
-        if (segmentMibNextPower2 > 32) {
-            segmentMibNextPower2 = 32;
+        if (segmentMibNextPower2 > MAX_SEGMENT_SIZE_IN_MIB) {
+            logger.warn("segmentSizeInMiB {} exceeds the maximum, using {}",
+                    segmentSizeInMiB, MAX_SEGMENT_SIZE_IN_MIB);
+            segmentMibNextPower2 = MAX_SEGMENT_SIZE_IN_MIB;
         }
-        return 1 << (Integer.numberOfTrailingZeros(segmentMibNextPower2) + Integer.numberOfTrailingZeros(MiB));
+        return segmentMibNextPower2 * MiB;
     }
 
     private static int parseSegmentSizeInBytes(String raw) {
         return calculateSegmentSizeInBytes(Integer.parseInt(raw));
+    }
+
+    // Free segments kept for reuse per heap, in MiB: at most 1024 MiB;
+    // at least one segment is kept whatever the value.
+    static int calculateSegmentCacheSizeInBytes(int segmentCacheSizeInMiB) {
+        ObjectUtil.checkPositive(segmentCacheSizeInMiB, "segmentCacheSizeInMiB");
+        if (segmentCacheSizeInMiB > MAX_SEGMENT_CACHE_SIZE_IN_MIB) {
+            logger.warn("segmentCacheSizeInMiB {} exceeds the maximum, using {}",
+                    segmentCacheSizeInMiB, MAX_SEGMENT_CACHE_SIZE_IN_MIB);
+            segmentCacheSizeInMiB = MAX_SEGMENT_CACHE_SIZE_IN_MIB;
+        }
+        return segmentCacheSizeInMiB * MiB;
+    }
+
+    private static int parseSegmentCacheSizeInBytes(String raw) {
+        return calculateSegmentCacheSizeInBytes(Integer.parseInt(raw));
     }
 
     static int calculateMaxHeapWrapsLength(int maxSharedHeapWrapsLength) {
@@ -79,6 +108,12 @@ public final class MiMallocOption {
         int maxLength = NettyRuntime.availableProcessors() * 4;
         String value = SystemPropertyUtil.get(MAX_SHARED_HEAP_WRAPS_LENGTH_PROP_KEY, String.valueOf(maxLength)).trim();
         return withPropertyContext(MAX_SHARED_HEAP_WRAPS_LENGTH_PROP_KEY, value, () -> parseMaxHeapWrapsLength(value));
+    }
+
+    static int getDefaultSegmentCacheSizeInBytes() {
+        String value = SystemPropertyUtil.get(SEGMENT_CACHE_SIZE_PROP_KEY,
+                String.valueOf(DEFAULT_SEGMENT_CACHE_SIZE_IN_MIB)).trim();
+        return withPropertyContext(SEGMENT_CACHE_SIZE_PROP_KEY, value, () -> parseSegmentCacheSizeInBytes(value));
     }
 
     /**

@@ -27,6 +27,8 @@ import static io.github.neoionet.netty.mimalloc.MiMallocOption.getDefaultHeapStr
 import static io.github.neoionet.netty.mimalloc.MiMallocOption.getDefaultMaxSharedHeapWrapsLength;
 import static io.github.neoionet.netty.mimalloc.MiMallocOption.getDefaultPageSearchStrategy;
 import static io.github.neoionet.netty.mimalloc.MiMallocOption.getDefaultSegmentSizeInBytes;
+import static io.github.neoionet.netty.mimalloc.MiMallocOption.getDefaultSegmentCacheSizeInBytes;
+import static io.github.neoionet.netty.mimalloc.MiMallocOption.calculateSegmentCacheSizeInBytes;
 
 /**
  * A Free-List {@link ByteBufAllocator} derived from `mimalloc`:
@@ -180,6 +182,7 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
         PageSearchStrategy pageSearchStrategy = getDefaultPageSearchStrategy();
         int maxSharedHeapWrapsLength = getDefaultMaxSharedHeapWrapsLength();
         HeapStrategy heapStrategy = getDefaultHeapStrategy();
+        int segmentCacheSizeInBytes = getDefaultSegmentCacheSizeInBytes();
 
         private Builder() {
             if (logger.isDebugEnabled()) {
@@ -191,11 +194,18 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
                         maxSharedHeapWrapsLength, this);
                 logger.debug("Default heapStrategy: {}, instance: {}",
                         heapStrategy.name().toLowerCase(Locale.ROOT), this);
+                logger.debug("Default segmentCacheSizeInMiB: {}, instance: {}",
+                        segmentCacheSizeInBytes / MiB, this);
             }
         }
 
         public Builder segmentSizeInMiB(int segmentSizeInMiB) {
             this.segmentSizeInBytes = calculateSegmentSizeInBytes(segmentSizeInMiB);
+            return this;
+        }
+
+        public Builder segmentCacheSizeInMiB(int segmentCacheSizeInMiB) {
+            this.segmentCacheSizeInBytes = calculateSegmentCacheSizeInBytes(segmentCacheSizeInMiB);
             return this;
         }
 

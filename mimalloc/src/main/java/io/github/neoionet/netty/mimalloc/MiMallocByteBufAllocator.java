@@ -123,6 +123,7 @@ final class MiMallocByteBufAllocator {
     private final PageSearchStrategy pageSearchStrategyParam;
     private final int maxSharedHeapWrapsLengthParam;
     private final HeapStrategy heapStrategyParam;
+    private final int segmentCacheSizeInBytesParam;
 
     private static final Object RECLAIMED_SEGMENT_FLAG = new Object();
 
@@ -163,13 +164,14 @@ final class MiMallocByteBufAllocator {
 
     // A page in the full queue is moved back only once at least 1/2^PAGE_UNFULL_MIN_FREE_SHIFT of its blocks
     // (and at least one) are free, so that it serves many allocations before it fills up again.
-    private static final int PAGE_UNFULL_MIN_FREE_SHIFT = 3;
+    private static final int PAGE_UNFULL_MIN_FREE_SHIFT = 2;
 
     MiMallocByteBufAllocator(ChunkAllocator chunkAllocator, MiByteBufAllocator.Builder builder, AllocType allocType) {
         this.chunkAllocator = chunkAllocator;
         this.chunkHasArray = chunkAllocator.chunkHasArray();
         this.chunkHasMemoryAddress = chunkAllocator.chunkHasMemoryAddress();
         this.segmentSizeInBytesParam = builder.segmentSizeInBytes;
+        this.segmentCacheSizeInBytesParam = builder.segmentCacheSizeInBytes;
         this.sliceCountParam = segmentSizeInBytesParam / SEGMENT_SLICE_SIZE;
         // segmentSizeInBytesParam / 2
         this.largeBlockSizeMaxParam = segmentSizeInBytesParam >> 1;
@@ -579,7 +581,8 @@ final class MiMallocByteBufAllocator {
             this.miBufCrossThreadsQueue = PlatformDependent.newFixedMpscQueue(1024);
             this.delayedBlockDeque = PlatformDependent.newFixedMpmcQueue(1024);
             this.cachePool = new ArrayDequeBounded<>(1024);
-            int maxReservedSegmentCount = Math.min(Math.max(1, 32 * MiB / allocator.segmentSizeInBytesParam), 8);
+            int maxReservedSegmentCount =
+                    Math.max(1, allocator.segmentCacheSizeInBytesParam / allocator.segmentSizeInBytesParam);
             this.reservedNormalSegmentDeque = new ArrayDequeBounded<>(maxReservedSegmentCount);
             this.pageQueues = new PageQueue[] {
                     new PageQueue(1, 0), // placeholder, not used.
