@@ -37,7 +37,7 @@ public final class MiMallocOption {
     private static final String SEGMENT_CACHE_SIZE_PROP_KEY =
             "io.github.neoionet.allocator.mimalloc.segment.cache.size.mib";
 
-    private static final int DEFAULT_SEGMENT_CACHE_SIZE_IN_MIB = 128;
+    private static final int DEFAULT_SEGMENT_CACHE_SIZE_IN_MIB = 1024;
 
     private static final int MAX_SEGMENT_CACHE_SIZE_IN_MIB = 1024;
 
