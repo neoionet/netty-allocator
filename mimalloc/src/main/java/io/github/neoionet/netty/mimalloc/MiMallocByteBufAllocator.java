@@ -2165,10 +2165,15 @@ final class MiMallocByteBufAllocator {
             --this.usedBlocks;
             assert this.usedBlocks >= 0;
             assert !this.isInFull || this.capacityBlocks == this.reservedBlocks;
-            if (checkFull && this.isInFull
-                    && (this.usedBlocks == 0 // An empty page is always moved back.
-                    || this.capacityBlocks - this.usedBlocks >= this.capacityBlocks >>> PAGE_UNFULL_MIN_FREE_SHIFT)) {
-                pageUnfull(heap);
+            if (checkFull && this.isInFull) {
+                if (this.usedBlocks == 0 && this.blockSize > MEDIUM_BLOCK_SIZE_MAX) {
+                    // A large page holds one block, and largeOrHugePageAlloc never reuses a page of the queue,
+                    // so free it now.
+                    heap.pageFree(this, heap.heapPageQueueOf(this));
+                } else if (this.usedBlocks == 0 // An empty page is always moved back.
+                        || this.capacityBlocks - this.usedBlocks >= this.capacityBlocks >>> PAGE_UNFULL_MIN_FREE_SHIFT) {
+                    pageUnfull(heap);
+                }
             }
         }
 
