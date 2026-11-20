@@ -30,7 +30,7 @@ public final class MiMallocOption {
     private static final String SEGMENT_SIZE_PROP_KEY = "io.github.neoionet.allocator.mimalloc.segment.size.mib";
 
     // Default segment size in MiB.
-    private static final int DEFAULT_SEGMENT_SIZE_IN_MIB = 4;
+    private static final int DEFAULT_SEGMENT_SIZE_IN_MIB = 2;
 
     private static final int MAX_SEGMENT_SIZE_IN_MIB = 32;
 
