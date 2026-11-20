@@ -7,9 +7,12 @@ import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.util.ByteProcessor;
 import io.netty.util.CharsetUtil;
+import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.concurrent.FastThreadLocal;
 import io.netty.util.concurrent.FastThreadLocalThread;
+import io.netty.util.concurrent.ScheduledFuture;
 import io.netty.util.internal.PlatformDependent;
+import io.netty.util.internal.ThreadExecutorMap;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 import java.io.IOException;
@@ -111,6 +114,17 @@ final class MiMallocByteBufAllocator {
 
     private final FastThreadLocal<LocalHeap> THREAD_LOCAL_HEAP;
 
+    // Scheduled on the event loop of each thread-local heap, see THREAD_LOCAL_HEAP. It trims the heap of the thread
+    // that runs it, so it is safe even if an executor ran it on another thread.
+    private final Runnable idleTickTask = this::trimCurrentThread;
+
+    void trimCurrentThread() {
+        LocalHeap heap = THREAD_LOCAL_HEAP.getIfExists();   // never creates a heap
+        if (heap != null) {
+            heap.idleTick();
+        }
+    }
+
     private final ConcurrentLinkedDeque<Segment> abandonedSegmentDeque;
     // Count of abandoned segments for this allocator.
     private final AtomicLong abandonedSegmentCount = new AtomicLong();
@@ -146,6 +160,7 @@ final class MiMallocByteBufAllocator {
 
     private static final long SEGMENTS_DECAY_NANOS_INTERVAL = TimeUnit.SECONDS.toNanos(10);
     private static final long HEAP_NORMAL_COLLECT_NANOS_INTERVAL = TimeUnit.SECONDS.toNanos(10);
+    private static final long HEAP_TRIM_INTERVAL_MILLIS = TimeUnit.SECONDS.toMillis(10);
 
     private final boolean chunkHasArray;
     private final boolean chunkHasMemoryAddress;
@@ -182,13 +197,41 @@ final class MiMallocByteBufAllocator {
         this.THREAD_LOCAL_HEAP = new FastThreadLocal<LocalHeap>() {
             @Override
             protected LocalHeap initialValue() {
-                return new LocalHeap(MiMallocByteBufAllocator.this, null);
+                LocalHeap heap = new LocalHeap(MiMallocByteBufAllocator.this, null);
+                if (HEAP_TRIM_INTERVAL_MILLIS > 0) {
+                    EventExecutor executor = ThreadExecutorMap.currentExecutor();
+                    if (executor != null) {
+                        try {
+                            heap.trimFuture = executor.scheduleAtFixedRate(idleTickTask,
+                                    HEAP_TRIM_INTERVAL_MILLIS, HEAP_TRIM_INTERVAL_MILLIS, TimeUnit.MILLISECONDS);
+                        } catch (RuntimeException e) {
+                            // The executor does not take scheduled tasks (shutting down, or not supported):
+                            // no idle trim for this heap, which is then trimmed only by its own allocations,
+                            // as without this task.
+                            if (logger.isDebugEnabled()) {
+                                logger.debug("Could not schedule the idle trim on {}", executor, e);
+                            }
+                        }
+                    }
+                }
+                return heap;
             }
 
             @Override
             protected void onRemoval(LocalHeap heap) {
-                // Cleanup if needed
-                heap.heapCollect(ABANDON);
+                try {
+                    heap.heapCollect(ABANDON);
+                } finally {
+                    ScheduledFuture<?> f = heap.trimFuture;
+                    if (f != null) {
+                        heap.trimFuture = null;
+                        try {
+                            f.cancel(false);
+                        } catch (RuntimeException ignore) {
+                            // The executor is gone: the task will not run again anyway.
+                        }
+                    }
+                }
             }
         };
         this.sharedHeapWraps = new SharedHeapWrap[maxSharedHeapWrapsLengthParam];
@@ -553,6 +596,9 @@ final class MiMallocByteBufAllocator {
         int pageCount; // total number of pages in the `pages` queues.
         int genericCount; // how often is `allocateGeneric` called
         int genericCollectCount; // how often is `allocateGeneric` called without collecting.
+        int genericCalls;        // every call of allocateGeneric; wraps around, only compared for equality
+        int lastTickGenericCalls;
+        ScheduledFuture<?> trimFuture;
         final Page[] pagesFreeDirect;
         // 8 bytes to 2 MiB.
         final PageQueue[] pageQueues;
@@ -684,6 +730,35 @@ final class MiMallocByteBufAllocator {
                 this.delayedBlockDeque.clear();
                 freeReservedSegment();
             }
+        }
+
+        void decayReservedSegments(long nowNano) {
+            Segment segment;
+            assert coldReservedSegmentCount <= reservedNormalSegmentDeque.size();
+            // Free half of the segments that have stayed in the cache since the last decay (the oldest, at the tail).
+            int n = (coldReservedSegmentCount + 1) >>> 1;
+            while (n-- > 0 && (segment = reservedNormalSegmentDeque.pollLast()) != null) {
+                segment.deallocate();
+            }
+            coldReservedSegmentCount = reservedNormalSegmentDeque.size();
+            lastSegmentsDecayNano = nowNano;
+        }
+
+        private void heapCollectNormal(long heapNormalCollectNano) {
+            heapCollect(NORMAL);
+            lastHeapNormalCollectNano = heapNormalCollectNano;
+        }
+
+        void idleTick() {
+            if (genericCalls == lastTickGenericCalls) {
+                long now = System.nanoTime();
+                heapCollectNormal(now);
+                // No slow-path allocation for a whole interval:
+                // none of the cached segments was needed, so all are cold.
+                coldReservedSegmentCount = reservedNormalSegmentDeque.size();
+                decayReservedSegments(now);
+            }
+            lastTickGenericCalls = genericCalls;
         }
 
         private void freeReservedSegment() {
@@ -2648,6 +2723,7 @@ final class MiMallocByteBufAllocator {
     }
 
     private MiByteBuf allocateGeneric(int size, int maxCapacity, MiByteBuf byteBuf, LocalHeap heap, boolean isReAlloc) {
+        heap.genericCalls++; // for idleTick
         // Do administrative tasks every N generic allocations.
         boolean heapCollected = false;
         long heapNormalCollectNano = 0;
@@ -2662,8 +2738,7 @@ final class MiMallocByteBufAllocator {
             if (heap.genericCollectCount >= HEAP_GENERIC_COLLECT_COUNT
                     || heapNormalCollectNano - heap.lastHeapNormalCollectNano > HEAP_NORMAL_COLLECT_NANOS_INTERVAL) {
                 heap.genericCollectCount = 0;
-                heap.heapCollect(NORMAL);
-                heap.lastHeapNormalCollectNano = heapNormalCollectNano;
+                heap.heapCollectNormal(heapNormalCollectNano);
                 heapCollected = true;
             }
         }
@@ -2696,14 +2771,7 @@ final class MiMallocByteBufAllocator {
             heap.pageToFull(page, heap.heapPageQueueOf(page));
         }
         if (heapCollected && heapNormalCollectNano - heap.lastSegmentsDecayNano > SEGMENTS_DECAY_NANOS_INTERVAL) {
-            Segment segment;
-            assert heap.coldReservedSegmentCount <= heap.reservedNormalSegmentDeque.size();
-            int n = (heap.coldReservedSegmentCount + 1) >>> 1;
-            while (n-- > 0 && (segment = heap.reservedNormalSegmentDeque.pollLast()) != null) {
-                segment.deallocate();
-            }
-            heap.coldReservedSegmentCount = heap.reservedNormalSegmentDeque.size();
-            heap.lastSegmentsDecayNano = heapNormalCollectNano;
+            heap.decayReservedSegments(heapNormalCollectNano);
         }
         return byteBuf;
     }
