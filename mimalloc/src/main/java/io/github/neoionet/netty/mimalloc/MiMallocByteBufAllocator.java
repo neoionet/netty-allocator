@@ -114,17 +114,6 @@ final class MiMallocByteBufAllocator {
 
     private final FastThreadLocal<LocalHeap> THREAD_LOCAL_HEAP;
 
-    // Scheduled on the event loop of each thread-local heap, see THREAD_LOCAL_HEAP. It trims the heap of the thread
-    // that runs it, so it is safe even if an executor ran it on another thread.
-    private final Runnable idleTickTask = this::trimCurrentThread;
-
-    void trimCurrentThread() {
-        LocalHeap heap = THREAD_LOCAL_HEAP.getIfExists();   // never creates a heap
-        if (heap != null) {
-            heap.idleTick();
-        }
-    }
-
     private final ConcurrentLinkedDeque<Segment> abandonedSegmentDeque;
     // Count of abandoned segments for this allocator.
     private final AtomicLong abandonedSegmentCount = new AtomicLong();
@@ -181,6 +170,17 @@ final class MiMallocByteBufAllocator {
     // A page in the full queue is moved back only once at least 1/2^PAGE_UNFULL_MIN_FREE_SHIFT of its blocks
     // (and at least one) are free, so that it serves many allocations before it fills up again.
     private static final int PAGE_UNFULL_MIN_FREE_SHIFT = 2;
+
+    // Scheduled on the event loop of each thread-local heap, see THREAD_LOCAL_HEAP. It trims the heap of the thread
+    // that runs it, so it is safe even if an executor ran it on another thread.
+    private final Runnable idleTickTask = this::trimCurrentThread;
+
+    void trimCurrentThread() {
+        LocalHeap heap = THREAD_LOCAL_HEAP.getIfExists();   // never creates a heap
+        if (heap != null) {
+            heap.idleTick();
+        }
+    }
 
     MiMallocByteBufAllocator(ChunkAllocator chunkAllocator, MiByteBufAllocator.Builder builder, AllocType allocType) {
         this.chunkAllocator = chunkAllocator;
