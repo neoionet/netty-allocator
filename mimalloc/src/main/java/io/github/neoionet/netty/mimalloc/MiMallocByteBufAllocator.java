@@ -855,7 +855,8 @@ final class MiMallocByteBufAllocator {
             boolean isMarkPage = visitType == VISIT_TYPE_PAGE_MARK;
             // The full page queue is only visited for the page mark or abandoning: an empty page never stays there,
             // as both local frees and delayed frees (from other threads, processed by `heapCollect()` before this)
-            // go through `freeBlockLocal`, which moves an empty page back to its regular queue.
+            // go through `freeBlockLocal`, which frees an empty large page and moves any other empty page back
+            // to its regular queue.
             int maxBinIndex = isMarkPage || collectType == ABANDON ?
                     PAGE_QUEUE_BIN_FULL_INDEX : PAGE_QUEUE_BIN_FULL_INDEX - 1;
             for (int i = 0; i <= maxBinIndex; i++) {
@@ -2159,9 +2160,8 @@ final class MiMallocByteBufAllocator {
                 ((MiByteBufAdapter) this.delegate)._setInt(block, this.localFreeList);
                 this.localFreeList = block;
             }
-            // An empty page is not retired here: with few live blocks per size class it is hard to predict, and
-            // the branch cost more than retiring the page saved. Empty pages stay in their queue for reuse, and
-            // the next heap collect frees them; a page in the full queue is moved back first, see below.
+            // An empty page is not freed (retired) here, except a large page, see below.
+            // Empty pages stay in their queue for reuse, and the next heap collect frees them.
             --this.usedBlocks;
             assert this.usedBlocks >= 0;
             assert !this.isInFull || this.capacityBlocks == this.reservedBlocks;
