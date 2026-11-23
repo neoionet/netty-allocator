@@ -10,7 +10,6 @@ import io.netty.util.CharsetUtil;
 import io.netty.util.concurrent.EventExecutor;
 import io.netty.util.concurrent.FastThreadLocal;
 import io.netty.util.concurrent.FastThreadLocalThread;
-import io.netty.util.concurrent.ScheduledFuture;
 import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.ThreadExecutorMap;
 import io.netty.util.internal.logging.InternalLogger;
@@ -33,6 +32,7 @@ import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.concurrent.atomic.AtomicLong;
@@ -171,14 +171,62 @@ final class MiMallocByteBufAllocator {
     // (and at least one) are free, so that it serves many allocations before it fills up again.
     private static final int PAGE_UNFULL_MIN_FREE_SHIFT = 2;
 
-    // Scheduled on the event loop of each thread-local heap, see THREAD_LOCAL_HEAP. It trims the heap of the thread
-    // that runs it, so it is safe even if an executor ran it on another thread.
-    private final Runnable idleTickTask = this::trimCurrentThread;
+    private static final int QUIET_TICKS_BEFORE_STOP = 3;
 
-    void trimCurrentThread() {
-        LocalHeap heap = THREAD_LOCAL_HEAP.getIfExists();   // never creates a heap
-        if (heap != null) {
-            heap.idleTick();
+    /**
+     * A tick collects the heap and decays its cached segments while the owner thread is idle. At most one tick is
+     * pending per heap: {@code tickPending} is a token, taken by a CAS before a tick is scheduled, and returned when
+     * the ticks stop. A tick always runs on the owner thread, whoever scheduled it.
+     * <pre>{@code
+     * [owner thread]
+     *   initialValue
+     *   allocateGeneric
+     *   freeBlockLocal (a page becomes empty)
+     *   trimHeap (stopped, delayed list not empty)
+     *       -> ensureIdleTick (CAS takes the token)
+     *           -> scheduleIdleTick
+     *               -> executor.schedule(idleTickTask)
+     *
+     * [freeing thread]
+     *   freeBlockDelayedMt (delayed list goes from empty to non-empty)
+     *       -> scheduleIdleTickFromDelayedFree (CAS takes the token)
+     *           -> executor.schedule(idleTickTask)
+     *
+     * [owner thread, run by the executor after the interval]
+     *   idleTickTask -> trimHeap
+     *     |- not the heap of this thread -> return (the token is kept: the heap is gone)
+     *     |- again == true               -> scheduleIdleTick (the token is still held)
+     *     `- again == false              -> tickPending.set(false) (the token is returned)
+     *                                        `- delayed list not empty -> ensureIdleTick (CAS again)
+     * }</pre>
+     * No tick is cancelled: a tick may run after its heap was abandoned, or on a new thread of a resumed event loop,
+     * so {@code trimHeap} first checks that the heap is still the heap of the thread that runs it.
+     */
+    void trimHeap(LocalHeap heap) {
+        // Skip a tick that is not for the heap of this thread. No tick is canceled, so a tick can run after its heap
+        // was abandoned (`onRemoval`), or on the new thread of a resumed event loop, which has no heap or a new one.
+        // The tick then leaves `tickPending` set: the abandoned heap gets no other tick, and the heap of this
+        // thread, if any, is not touched. `getIfExists()` never creates a heap.
+        // A freeing thread that read `trimExecutor` just before `onRemoval` cleared it may still schedule a tick,
+        // which can resume a suspended event loop once; the tick then finds no heap, or a new one, and does nothing.
+        if (THREAD_LOCAL_HEAP.getIfExists() != heap) {
+            return;
+        }
+        boolean again;
+        try {
+            again = heap.idleTick();
+        } catch (Throwable t) {
+            again = false;
+            logger.warn("Idle trim failed", t);
+        }
+        if (again && scheduleIdleTick(heap)) {
+            return; // `tickPending` stays true.
+        }
+        heap.tickPending.set(false);
+        // A thread that pushed a delayed free after the collect of this tick, but before the reset above, saw
+        // `tickPending` set and did not wake us: check for it (both sides are volatile, so one of them sees the other).
+        if (heap.threadDelayedFreeList.get() != null) {
+            heap.ensureIdleTick();
         }
     }
 
@@ -199,40 +247,16 @@ final class MiMallocByteBufAllocator {
             @Override
             protected LocalHeap initialValue() {
                 LocalHeap heap = new LocalHeap(MiMallocByteBufAllocator.this, null);
-                if (HEAP_TRIM_INTERVAL_MILLIS > 0) {
-                    EventExecutor executor = ThreadExecutorMap.currentExecutor();
-                    if (executor != null) {
-                        try {
-                            heap.trimFuture = executor.scheduleAtFixedRate(idleTickTask,
-                                    HEAP_TRIM_INTERVAL_MILLIS, HEAP_TRIM_INTERVAL_MILLIS, TimeUnit.MILLISECONDS);
-                        } catch (RuntimeException e) {
-                            // The executor does not take scheduled tasks (shutting down, or not supported):
-                            // no idle trim for this heap, which is then trimmed only by its own allocations,
-                            // as without this task.
-                            if (logger.isDebugEnabled()) {
-                                logger.debug("Could not schedule the idle trim on {}", executor, e);
-                            }
-                        }
-                    }
-                }
+                heap.ensureIdleTick();
                 return heap;
             }
 
             @Override
             protected void onRemoval(LocalHeap heap) {
-                try {
-                    heap.heapCollect(ABANDON);
-                } finally {
-                    ScheduledFuture<?> f = heap.trimFuture;
-                    if (f != null) {
-                        heap.trimFuture = null;
-                        try {
-                            f.cancel(false);
-                        } catch (RuntimeException ignore) {
-                            // The executor is gone: the task will not run again anyway.
-                        }
-                    }
-                }
+                // No tick for a heap being abandoned: neither from this thread, nor woken by a freeing thread.
+                heap.unSupportLocalThreadTrim = true;
+                heap.trimExecutor = null;
+                heap.heapCollect(ABANDON);
             }
         };
         this.sharedHeapWraps = new SharedHeapWrap[maxSharedHeapWrapsLengthParam];
@@ -254,6 +278,37 @@ final class MiMallocByteBufAllocator {
             logger.debug("allocType: " + allocType +
                     ", effective heapStrategy: {}, instance: {}",
                     heapStrategyParam.name().toLowerCase(Locale.ROOT), this);
+        }
+    }
+
+    // Called on the owner thread, with `tickPending` set. Returns true if a tick is scheduled.
+    private boolean scheduleIdleTick(LocalHeap heap) {
+        assert heap.tickPending.get();
+        if (heap.unSupportLocalThreadTrim) {
+            return false;
+        }
+        EventExecutor executor = heap.trimExecutor;
+        if (executor == null) {
+            executor = ThreadExecutorMap.currentExecutor();
+            if (executor == null || !executor.inEventLoop()) {
+                heap.unSupportLocalThreadTrim = true;
+                return false;
+            }
+            heap.trimExecutor = executor; // Published for `scheduleIdleTickFromDelayedFree`.
+        }
+        try {
+            executor.schedule(heap.idleTickTask, HEAP_TRIM_INTERVAL_MILLIS, TimeUnit.MILLISECONDS);
+            return true;
+        } catch (RuntimeException e) {
+            // The executor does not take scheduled tasks (shutting down, or not supported):
+            // no idle trim for this heap, which is then trimmed only by its own allocations,
+            // as without this task.
+            heap.unSupportLocalThreadTrim = true;
+            heap.trimExecutor = null;
+            if (logger.isDebugEnabled()) {
+                logger.debug("Could not schedule the idle trim on {}", executor, e);
+            }
+            return false;
         }
     }
 
@@ -565,6 +620,10 @@ final class MiMallocByteBufAllocator {
         public void clear() {
             this.arrayDeque.clear();
         }
+
+        public boolean isEmpty() {
+            return this.arrayDeque.isEmpty();
+        }
     }
 
     // The paddings before the fields of `LocalHeap` (`LocalHeapPadBefore`) and after them (in `LocalHeap` itself) keep
@@ -599,7 +658,14 @@ final class MiMallocByteBufAllocator {
         int genericCollectCount; // how often is `allocateGeneric` called without collecting.
         int genericCalls;        // every call of allocateGeneric; wraps around, only compared for equality
         int lastTickGenericCalls;
-        ScheduledFuture<?> trimFuture;
+        boolean unSupportLocalThreadTrim; // Owner thread only.
+        int quietTicks;
+        // The executor of the owner thread once a tick was scheduled, read by the freeing threads to wake the ticks;
+        // null if there is no idle trim (not yet, not supported, or the heap is abandoned).
+        volatile EventExecutor trimExecutor;
+        // True while a tick is scheduled, queued or running, whoever scheduled it: at most one tick at a time.
+        final AtomicBoolean tickPending = new AtomicBoolean();
+        final Runnable idleTickTask;
         final Page[] pagesFreeDirect;
         // 8 bytes to 2 MiB.
         final PageQueue[] pageQueues;
@@ -626,6 +692,8 @@ final class MiMallocByteBufAllocator {
             this.allocator = allocator;
             this.threadDelayedFreeList = new AtomicReference<>();
             this.sharedHeapWrap = sharedHeapWrap;
+            this.unSupportLocalThreadTrim = sharedHeapWrap != null || HEAP_TRIM_INTERVAL_MILLIS <= 0;
+            this.idleTickTask = () -> allocator.trimHeap((LocalHeap) this);
             this.miBufLocalDeque = new ArrayDequeBounded<>(1024);
             this.miBufCrossThreadsQueue = PlatformDependent.newFixedMpscQueue(1024);
             this.delayedBlockDeque = PlatformDependent.newFixedMpmcQueue(1024);
@@ -750,16 +818,55 @@ final class MiMallocByteBufAllocator {
             lastHeapNormalCollectNano = heapNormalCollectNano;
         }
 
-        void idleTick() {
-            if (genericCalls == lastTickGenericCalls) {
-                long now = System.nanoTime();
-                heapCollectNormal(now);
-                // No slow-path allocation for a whole interval:
-                // none of the cached segments was needed, so all are cold.
-                coldReservedSegmentCount = reservedNormalSegmentDeque.size();
-                decayReservedSegments(now);
+        // Only called by the owner thread: start the ticks if none is pending.
+        void ensureIdleTick() {
+            if (!unSupportLocalThreadTrim && !tickPending.get()
+                    && tickPending.compareAndSet(false, true)
+                    && !allocator.scheduleIdleTick(this)) {
+                tickPending.set(false);
             }
-            lastTickGenericCalls = genericCalls;
+        }
+
+        // Freeing thread: called once the first block of a batch was pushed on `threadDelayedFreeList`. If the
+        // ticks of the owner have stopped, schedule one, as the owner may never allocate or free again by itself.
+        void scheduleIdleTickFromDelayedFree() {
+            EventExecutor executor = trimExecutor;
+            if (executor == null || tickPending.get()
+                    || !tickPending.compareAndSet(false, true)) {
+                return;
+            }
+            try {
+                // Not cancellable by the owner: `trimHeap` checks that the heap is still alive when it runs.
+                executor.schedule(idleTickTask, HEAP_TRIM_INTERVAL_MILLIS, TimeUnit.MILLISECONDS);
+            } catch (RuntimeException e) {
+                tickPending.set(false); // The executor is shutting down: the heap is abandoned soon.
+            }
+        }
+
+        boolean idleTick() {
+            if (genericCalls != lastTickGenericCalls) {
+                lastTickGenericCalls = genericCalls;
+                quietTicks = 0;
+                return true;
+            }
+            int pagesBeforeCollect = pageCount;
+            long now = System.nanoTime();
+            heapCollectNormal(now);
+            // No slow-path allocation for a whole interval:
+            // none of the cached segments was needed, so all are cold.
+            coldReservedSegmentCount = reservedNormalSegmentDeque.size();
+            decayReservedSegments(now);
+            if (!reservedNormalSegmentDeque.isEmpty() || pageCount != pagesBeforeCollect) {
+                quietTicks = 0;
+                return true;
+            }
+            // Saturates at QUIET_TICKS_BEFORE_STOP: it is not reset when the ticks stop,
+            // so a restarted chain that finds nothing to free stops at once.
+            if (quietTicks < QUIET_TICKS_BEFORE_STOP) {
+                quietTicks++;
+            }
+            // Stop if quietTicks >= QUIET_TICKS_BEFORE_STOP, let the event loop have a chance to suspend.
+            return quietTicks < QUIET_TICKS_BEFORE_STOP;
         }
 
         private void freeReservedSegment() {
@@ -2178,6 +2285,9 @@ final class MiMallocByteBufAllocator {
             // Empty pages stay in their queue for reuse, and the next heap collect frees them.
             --this.usedBlocks;
             assert this.usedBlocks >= 0;
+            if (this.usedBlocks == 0) {
+                heap.ensureIdleTick();   // an empty page waits for a collect
+            }
             assert !this.isInFull || this.capacityBlocks == this.reservedBlocks;
             if (checkFull && this.isInFull) {
                 if (this.usedBlocks == 0 && this.blockSize > MEDIUM_BLOCK_SIZE_MAX) {
@@ -2522,6 +2632,7 @@ final class MiMallocByteBufAllocator {
         // If this was the first non-local free, we need to push it on the heap delayed free list.
         // `useDelayed` will only be true if the delayed flag of `threadFreeList` was `USE_DELAYED_FREE`.
         if (useDelayed) {
+            LocalHeap wakeHeap = null;
             try {
                 // Racy read on `heap`, but ok because `DELAYED_FREEING` is set.
                 // (see `heapCollectAbandon`)
@@ -2534,6 +2645,9 @@ final class MiMallocByteBufAllocator {
                     dfree = heap.threadDelayedFreeList.get();
                     delayedBlock.nextDelayedBlock = dfree;
                 } while (!heap.threadDelayedFreeList.compareAndSet(dfree, delayedBlock));
+                if (dfree == null) {
+                    wakeHeap = heap;
+                }
             } finally { // Make sure we always reset the `DELAYED_FREEING` to `NO_DELAYED_FREE`.
                 // Other threads may push blocks, and the owner may take the list, while the flag is
                 // `DELAYED_FREEING`, so only the flag is reset here, keeping the current list head.
@@ -2546,6 +2660,14 @@ final class MiMallocByteBufAllocator {
                                 new IllegalStateException("Failed to reset DELAYED_FREEING flag"));
                     }
                 } while (!threadFreeList.compareAndSet(xCurrent, Page.tf(NO_DELAYED_FREE, Page.tfBlock(xCurrent))));
+            }
+            if (wakeHeap != null) {
+                // The first delayed free since the owner took the list: wake its ticks if they have stopped.
+                // Each page sends its first free of a batch here (the owner resets its flag to `USE_DELAYED_FREE`
+                // when it frees that block), and a full page is only freed through here. Done after the flag reset,
+                // so that the owner, which waits for `DELAYED_FREEING` to clear, never waits for this.
+                // Safe on an abandoned heap: its `trimExecutor` is null, or `trimHeap` skips the tick.
+                wakeHeap.scheduleIdleTickFromDelayedFree();
             }
         } else { // Common path
             MiByteBufAdapter delegate = (MiByteBufAdapter) page.delegate;
@@ -2743,6 +2865,8 @@ final class MiMallocByteBufAllocator {
 
     private MiByteBuf allocateGeneric(int size, int maxCapacity, MiByteBuf byteBuf, LocalHeap heap, boolean isReAlloc) {
         heap.genericCalls++; // for idleTick
+        // Trigger idle trim on non-shared heap.
+        heap.ensureIdleTick();
         // Do administrative tasks every N generic allocations.
         boolean heapCollected = false;
         long heapNormalCollectNano = 0;
