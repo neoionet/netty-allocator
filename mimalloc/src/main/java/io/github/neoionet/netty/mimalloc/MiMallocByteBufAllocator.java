@@ -161,6 +161,7 @@ final class MiMallocByteBufAllocator {
     private static final long SEGMENTS_DECAY_NANOS_INTERVAL = TimeUnit.SECONDS.toNanos(10);
     private static final long HEAP_NORMAL_COLLECT_NANOS_INTERVAL = TimeUnit.SECONDS.toNanos(10);
     private static final long HEAP_TRIM_INTERVAL_MILLIS = TimeUnit.SECONDS.toMillis(10);
+    private static final long SEGMENT_ALLOC_COLLECT_NANOS_INTERVAL = TimeUnit.MILLISECONDS.toNanos(100);
 
     private final boolean chunkHasArray;
     private final boolean chunkHasMemoryAddress;
@@ -1168,11 +1169,24 @@ final class MiMallocByteBufAllocator {
             return page;
         }
 
+        private boolean tryCollectBeforeNewSegment() {
+            long now = System.nanoTime();
+            if (now - lastHeapNormalCollectNano < SEGMENT_ALLOC_COLLECT_NANOS_INTERVAL) {
+                return false;
+            }
+            heapCollectNormal(now);
+            return true;
+        }
+
         private Page segmentsPageAlloc(int requiredSize, int blockSize) {
             int pageSize = alignUp(requiredSize,
                     requiredSize > MEDIUM_PAGE_SIZE ? MEDIUM_PAGE_SIZE : SEGMENT_SLICE_SIZE);
             int slicesNeeded = pageSize >> SEGMENT_SLICE_SHIFT;
             Page page = segmentsPageFindAndAllocate(slicesNeeded);
+            if (page == null && tryCollectBeforeNewSegment()) {
+                // the collect may have freed a large enough span.
+                page = segmentsPageFindAndAllocate(slicesNeeded);
+            }
             if (page == null) {
                 // No free page, allocate a new segment and try again.
                 if (segmentReclaimOrAlloc(slicesNeeded, blockSize) == null) {
