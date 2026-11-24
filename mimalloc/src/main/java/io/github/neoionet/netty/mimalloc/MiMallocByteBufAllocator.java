@@ -17,6 +17,7 @@ import io.netty.util.internal.logging.InternalLoggerFactory;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.ref.WeakReference;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.ClosedChannelException;
@@ -30,6 +31,8 @@ import java.util.Locale;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -137,6 +140,8 @@ final class MiMallocByteBufAllocator {
 
     private final SharedHeapWrap[] sharedHeapWraps;
 
+    private final AtomicBoolean sharedHeapsTrimTaskTriggered = new AtomicBoolean();
+
     // The number references the default value of `glibc.pthread.mutex_spin_count`, see:
     // https://sourceware.org/glibc/manual/latest/html_mono/libc.html#index-glibc_002epthread_002emutex_005fspin_005fcount
     private static final int MAX_SHARED_HEAP_LOCK_SPIN_COUNT = 100;
@@ -171,7 +176,20 @@ final class MiMallocByteBufAllocator {
     // (and at least one) are free, so that it serves many allocations before it fills up again.
     private static final int PAGE_UNFULL_MIN_FREE_SHIFT = 2;
 
-    private static final int QUIET_TICKS_BEFORE_STOP = 3;
+    private static final int HEAP_QUIET_TICKS_BEFORE_STOP = 3;
+
+    private static final ScheduledThreadPoolExecutor SHARED_HEAPS_TRIM_EXECUTOR =
+            new ScheduledThreadPoolExecutor(1, r -> {
+                Thread t = new Thread(r, "mi-shared-heaps-trim");
+                t.setDaemon(true);
+                t.setContextClassLoader(null);
+                return t;
+            });
+    static {
+        SHARED_HEAPS_TRIM_EXECUTOR.setKeepAliveTime(60, TimeUnit.SECONDS);
+        SHARED_HEAPS_TRIM_EXECUTOR.allowCoreThreadTimeOut(true);
+        SHARED_HEAPS_TRIM_EXECUTOR.setRemoveOnCancelPolicy(true);
+    }
 
     /**
      * A tick collects the heap and decays its cached segments while the owner thread is idle. At most one tick is
@@ -860,13 +878,13 @@ final class MiMallocByteBufAllocator {
                 quietTicks = 0;
                 return true;
             }
-            // Saturates at QUIET_TICKS_BEFORE_STOP: it is not reset when the ticks stop,
+            // Saturates at HEAP_QUIET_TICKS_BEFORE_STOP: it is not reset when the ticks stop,
             // so a restarted chain that finds nothing to free stops at once.
-            if (quietTicks < QUIET_TICKS_BEFORE_STOP) {
+            if (quietTicks < HEAP_QUIET_TICKS_BEFORE_STOP) {
                 quietTicks++;
             }
-            // Stop if quietTicks >= QUIET_TICKS_BEFORE_STOP, let the event loop have a chance to suspend.
-            return quietTicks < QUIET_TICKS_BEFORE_STOP;
+            // Stop if quietTicks >= HEAP_QUIET_TICKS_BEFORE_STOP, let the event loop have a chance to suspend.
+            return quietTicks < HEAP_QUIET_TICKS_BEFORE_STOP;
         }
 
         private void freeReservedSegment() {
@@ -1626,6 +1644,7 @@ final class MiMallocByteBufAllocator {
                 if (chunk == null) {
                     return null; // Signal OOM
                 }
+                allocator.triggerSharedHeapsTrimIfNeeded(this);
                 segment = new Segment(allocator, segmentSizeInBytesParam, allocator.sliceCountParam, SEGMENT_NORMAL,
                         chunk, this);
             } else {
@@ -2439,10 +2458,9 @@ final class MiMallocByteBufAllocator {
      * @param heap the heap performing the allocation.
      */
     private AbstractByteBuf newChunk(int size, boolean returnNullOnOom, LocalHeap heap) {
+        AbstractByteBuf buf;
         try {
-            AbstractByteBuf buf = chunkAllocator.allocate(size, size);
-            this.usedMemory.addAndGet(size);
-            return buf;
+            buf = chunkAllocator.allocate(size, size);
         } catch (OutOfMemoryError e) {
             if (returnNullOnOom) {
                 heap.lastOutOfMemoryError = e;
@@ -2450,6 +2468,74 @@ final class MiMallocByteBufAllocator {
             }
             // Do not touch `heap`: this path may run on a shared heap without holding its lock.
             throw e;
+        }
+        this.usedMemory.addAndGet(size);
+        return buf;
+    }
+
+    private static final class SharedHeapTrimTask implements Runnable {
+        private final WeakReference<MiMallocByteBufAllocator> allocRef;
+        private volatile ScheduledFuture<?> future;
+
+        SharedHeapTrimTask(MiMallocByteBufAllocator allocator) {
+            allocRef = new WeakReference<>(allocator);
+        }
+
+        @Override
+        public void run() {
+            MiMallocByteBufAllocator allocator = allocRef.get();
+            if (allocator == null) {
+                ScheduledFuture<?> f = future;
+                if (f != null) {
+                    f.cancel(false);
+                    future = null;
+                }
+                return;
+            }
+            allocator.trimSharedHeaps();
+        }
+    }
+
+    private void trimSharedHeaps() {
+        int currentScanLength = this.heapsScanLength.get();
+        for (int i = currentScanLength - 1; i >= 0; i--) {
+            SharedHeapWrap heapWrap = this.sharedHeapWraps[i];
+            if (heapWrap.heap == null) {
+                continue;
+            }
+            if (heapWrap.tryLock()) {
+                try {
+                    LocalHeap heap = heapWrap.heap;
+                    if (heap != null) {
+                        // The result is ignored:
+                        // the shared heaps are trimmed at a fixed delay, not by a chain of ticks that stops.
+                        heap.idleTick();
+                    }
+                } catch (Throwable t) {
+                    logger.warn("Shared heap trim failed", t);
+                } finally {
+                    heapWrap.unlock();
+                }
+            }
+        }
+    }
+
+    private void triggerSharedHeapsTrimIfNeeded(LocalHeap heap) {
+        if (HEAP_TRIM_INTERVAL_MILLIS <= 0 || heap.sharedHeapWrap == null) {
+            return;
+        }
+        if (!sharedHeapsTrimTaskTriggered.get()
+                && sharedHeapsTrimTaskTriggered.compareAndSet(false, true)) {
+            try {
+                SharedHeapTrimTask task = new SharedHeapTrimTask(this);
+                task.future = SHARED_HEAPS_TRIM_EXECUTOR.scheduleWithFixedDelay(task,
+                        HEAP_TRIM_INTERVAL_MILLIS, HEAP_TRIM_INTERVAL_MILLIS, TimeUnit.MILLISECONDS);
+            } catch (Throwable t) {
+                // Throwable: the first schedule starts the trim thread, and `Thread.start()` throws an OutOfMemoryError
+                // when no native thread can be created. The chunk is already allocated: only the trim is lost,
+                // do not fail the buffer allocation for it.
+                logger.warn("Failed to schedule the shared heaps trim of {}", this, t);
+            }
         }
     }
 
