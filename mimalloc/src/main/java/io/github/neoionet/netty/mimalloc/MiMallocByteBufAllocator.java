@@ -153,8 +153,10 @@ final class MiMallocByteBufAllocator {
     private static final long NO_OWNER_THREAD_ID = -1L;
 
     private static final long SEGMENTS_DECAY_NANOS_INTERVAL = TimeUnit.SECONDS.toNanos(10);
+    private static final long HEAP_TRIM_INTERVAL_MILLIS = TimeUnit.SECONDS.toMillis(SEGMENTS_DECAY_NANOS_INTERVAL);
+    // Collects at least this often when too few generic allocations trigger it by count.
+    // Not above SEGMENTS_DECAY_NANOS_INTERVAL: the decay on the allocation path only runs right after a collect.
     private static final long HEAP_NORMAL_COLLECT_NANOS_INTERVAL = TimeUnit.SECONDS.toNanos(10);
-    private static final long HEAP_TRIM_INTERVAL_MILLIS = TimeUnit.SECONDS.toMillis(10);
     private static final long SEGMENT_ALLOC_COLLECT_NANOS_INTERVAL = TimeUnit.MILLISECONDS.toNanos(100);
 
     private final boolean chunkHasArray;
