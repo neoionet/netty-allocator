@@ -203,7 +203,7 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
         }
 
         /**
-         * Sets the size of a segment, in MiB: rounded up to a power of two, from 1 to 32 (default 4; larger values
+         * Sets the size of a segment, in MiB: rounded up to a power of two, from 1 to 32 (default 2; larger values
          * are clamped to 32 with a warning).
          *
          * @param segmentSizeInMiB the segment size, in MiB
@@ -215,7 +215,7 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
         }
 
         /**
-         * Sets how much memory of free segments each heap keeps for reuse, in MiB (default 128, at most 1024;
+         * Sets how much memory of free segments each heap keeps for reuse, in MiB (default 1024, at most 1024;
          * larger values are clamped with a warning).
          * <p>
          * Any value above 0 keeps at least one segment. 0 keeps none: use it only when memory matters more than

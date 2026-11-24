@@ -57,7 +57,7 @@ If you want to use the mimalloc allocator within your server or client transport
        <dependency>
             <groupId>io.netty</groupId>
             <artifactId>netty-transport</artifactId>
-            <version>4.2.17.Final</version>
+            <version>4.2.19.Final</version>
         </dependency>
     </dependencies>
 ```
@@ -110,8 +110,8 @@ b.group(group)
 *   **`-Dio.github.neoionet.allocator.mimalloc.heap.strategy`**
     *   **Allowed Values(case-insensitive):** `auto`, `tl`, `shared`
     *   **Description:** Determines the heap strategy. 
-    * * `auto`: **EventLoop threads use thread-local heaps, non-EventLoop threads use shared heaps**. 
-    * * `tl`: **Force all threads to use thread-local heaps. NOTE: If you forcefully use `tl` for non-eventLoop thread, it will not do automatically cleanup when the thread exits**.
+    * * `auto`: **EventLoop threads use thread-local heaps, non-EventLoop threads use shared heaps**.
+    * * `tl`: **Force all threads to use thread-local heaps. NOTE: If you forcefully use `tl` for non-EventLoop threads, their heaps will not be cleaned up automatically when the threads exit, and will not be trimmed while idle either (there is no EventLoop to run the idle trim on): their cached memory is only released by later allocations on the same thread**.
     * * `shared`: **Force all threads to use shared heaps**.
     *   **Default value:** `auto`
 
@@ -133,11 +133,19 @@ b.group(group)
     *   **Default value:** `1024`
 
 * **`-Dio.github.neoionet.allocator.mimalloc.maxSharedHeaps`**
-    *   **Description:** Sets the max shared heaps count.
+    *   **Description:** Sets the max shared heaps count (rounded up to a power of two).
     *   **Default value:** `NettyRuntime.availableProcessors() * 4`
 
+* **`-Dio.github.neoionet.allocator.mimalloc.heap.idle.trim`**
+    *   **Allowed Values(case-insensitive):** `true`, `false` (any other value fails with an `IllegalArgumentException`)
+    *   **Description:** Sets whether cached memory is released while the heaps are idle. When enabled, about every 10 seconds the free segments cached by an idle heap are halved, until none are left:
+    * * thread-local heaps are trimmed by a task on their own EventLoop, which stops once the heap has nothing more to release, so the EventLoop can still suspend.
+    * * shared heaps are trimmed by a single JVM-wide daemon thread, `mi-shared-heaps-trim`, which is only started once a shared heap is used, skips the heaps that are busy, and exits about a minute after no allocator is left.
+    * * When disabled, no task or thread is started, and cached memory is only released by later allocations of the same heap.
+    *   **Default value:** `true`
+
 ### 2. Instance level configuration, which can override the global configuration:
-```
+```java
         ByteBufAllocator allocator = MiByteBufAllocator
                                          .builder()
                                          .heapStrategy(MiMallocOption.HeapStrategy.AUTO)
@@ -145,6 +153,7 @@ b.group(group)
                                          .segmentSizeInMiB(2)
                                          .segmentCacheSizeInMiB(1024)
                                          .maxSharedHeaps(16)
+                                         .heapIdleTrim(true)
                                          .build();
 ```
 

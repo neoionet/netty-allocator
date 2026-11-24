@@ -161,8 +161,10 @@ public final class MiMallocOption {
         AUTO,
         /**
          * Force all threads to use thread-local heaps.
-         * Note: If you forcefully use `tl` for non-eventLoop thread,
-         *       it will not do automatically cleanup when the thread exits.
+         * Note: the heaps of threads that do not clean up their FastThreadLocals when they exit (threads other than
+         *       FastThreadLocalThreads) are not cleaned up automatically when the threads exit; and the heaps of
+         *       non-EventLoop threads are not trimmed while idle either (there is no EventLoop to run the idle
+         *       trim on): their cached memory is only released by later allocations on the same thread.
          */
         TL,
         /**
