@@ -21,6 +21,8 @@ public final class MiMallocOption {
 
     private static final String HEAP_STRATEGY_PROP_KEY = "io.github.neoionet.allocator.mimalloc.heap.strategy";
 
+    private static final String HEAP_IDLE_TRIM_PROP_KEY = "io.github.neoionet.allocator.mimalloc.heap.idle.trim";
+
     private static final String MAX_SHARED_HEAP_WRAPS_LENGTH_PROP_KEY =
             "io.github.neoionet.allocator.mimalloc.maxSharedHeaps";
 
@@ -112,6 +114,23 @@ public final class MiMallocOption {
         String value = SystemPropertyUtil.get(SEGMENT_CACHE_SIZE_PROP_KEY,
                 String.valueOf(DEFAULT_SEGMENT_CACHE_SIZE_IN_MIB)).trim();
         return withPropertyContext(SEGMENT_CACHE_SIZE_PROP_KEY, value, () -> parseSegmentCacheSizeInBytes(value));
+    }
+
+    static boolean getDefaultHeapIdleTrim() {
+        String value = SystemPropertyUtil.get(HEAP_IDLE_TRIM_PROP_KEY, String.valueOf(true)).trim();
+        return withPropertyContext(HEAP_IDLE_TRIM_PROP_KEY, value, () -> parseBoolean(value));
+    }
+
+    // Only "true" or "false" (any case): `Boolean.parseBoolean` takes any other value as false, so a typo
+    // would silently turn the option off.
+    private static boolean parseBoolean(String raw) {
+        if (String.valueOf(true).equalsIgnoreCase(raw)) {
+            return true;
+        }
+        if (String.valueOf(false).equalsIgnoreCase(raw)) {
+            return false;
+        }
+        throw new IllegalArgumentException("expected true or false");
     }
 
     /**

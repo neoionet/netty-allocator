@@ -23,6 +23,7 @@ import static io.github.neoionet.netty.mimalloc.MiMallocOption.calculateMaxHeapW
 import static io.github.neoionet.netty.mimalloc.MiMallocOption.calculateSegmentSizeInBytes;
 import static io.github.neoionet.netty.mimalloc.MiMallocOption.PageSearchStrategy;
 import static io.github.neoionet.netty.mimalloc.MiMallocOption.HeapStrategy;
+import static io.github.neoionet.netty.mimalloc.MiMallocOption.getDefaultHeapIdleTrim;
 import static io.github.neoionet.netty.mimalloc.MiMallocOption.getDefaultHeapStrategy;
 import static io.github.neoionet.netty.mimalloc.MiMallocOption.getDefaultMaxSharedHeapWrapsLength;
 import static io.github.neoionet.netty.mimalloc.MiMallocOption.getDefaultPageSearchStrategy;
@@ -183,6 +184,7 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
         int maxSharedHeapWrapsLength = getDefaultMaxSharedHeapWrapsLength();
         HeapStrategy heapStrategy = getDefaultHeapStrategy();
         int segmentCacheSizeInBytes = getDefaultSegmentCacheSizeInBytes();
+        boolean heapIdleTrim = getDefaultHeapIdleTrim();
 
         private Builder() {
             if (logger.isDebugEnabled()) {
@@ -196,6 +198,7 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
                         heapStrategy.name().toLowerCase(Locale.ROOT), this);
                 logger.debug("Default segmentCacheSizeInMiB: {}, instance: {}",
                         segmentCacheSizeInBytes / MiB, this);
+                logger.debug("Default heapIdleTrim: {}, instance: {}", heapIdleTrim, this);
             }
         }
 
@@ -240,6 +243,20 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
         public Builder heapStrategy(HeapStrategy heapStrategy) {
             ObjectUtil.checkNotNull(heapStrategy, "heapStrategy");
             this.heapStrategy = heapStrategy;
+            return this;
+        }
+
+        /**
+         * Sets whether cached memory is released while the heaps are idle (default {@code true}): by a task on the
+         * event loop of each thread-local heap, and by a JVM-wide daemon thread ({@code mi-shared-heaps-trim}) for
+         * the shared heaps. When {@code false}, cached memory is only released by later allocations of the same heap.
+         * The default can be set with {@code -Dio.github.neoionet.allocator.mimalloc.heap.idle.trim}.
+         *
+         * @param heapIdleTrim whether to release cached memory while the heaps are idle
+         * @return this builder
+         */
+        public Builder heapIdleTrim(boolean heapIdleTrim) {
+            this.heapIdleTrim = heapIdleTrim;
             return this;
         }
 

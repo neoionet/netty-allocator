@@ -130,6 +130,7 @@ final class MiMallocByteBufAllocator {
     private final int maxSharedHeapWrapsLengthParam;
     private final HeapStrategy heapStrategyParam;
     private final int segmentCacheSizeInBytesParam;
+    private final boolean heapIdleTrimParam;
 
     private static final Object RECLAIMED_SEGMENT_FLAG = new Object();
 
@@ -153,7 +154,7 @@ final class MiMallocByteBufAllocator {
     private static final long NO_OWNER_THREAD_ID = -1L;
 
     private static final long SEGMENTS_DECAY_NANOS_INTERVAL = TimeUnit.SECONDS.toNanos(10);
-    private static final long HEAP_TRIM_INTERVAL_MILLIS = TimeUnit.SECONDS.toMillis(SEGMENTS_DECAY_NANOS_INTERVAL);
+    private static final long HEAP_TRIM_INTERVAL_MILLIS = TimeUnit.NANOSECONDS.toMillis(SEGMENTS_DECAY_NANOS_INTERVAL);
     // Collects at least this often when too few generic allocations trigger it by count.
     // Not above SEGMENTS_DECAY_NANOS_INTERVAL: the decay on the allocation path only runs right after a collect.
     private static final long HEAP_NORMAL_COLLECT_NANOS_INTERVAL = TimeUnit.SECONDS.toNanos(10);
@@ -256,6 +257,7 @@ final class MiMallocByteBufAllocator {
         this.chunkHasMemoryAddress = chunkAllocator.chunkHasMemoryAddress();
         this.segmentSizeInBytesParam = builder.segmentSizeInBytes;
         this.segmentCacheSizeInBytesParam = builder.segmentCacheSizeInBytes;
+        this.heapIdleTrimParam = builder.heapIdleTrim;
         this.sliceCountParam = segmentSizeInBytesParam / SEGMENT_SLICE_SIZE;
         // segmentSizeInBytesParam / 2
         this.largeBlockSizeMaxParam = segmentSizeInBytesParam >> 1;
@@ -298,6 +300,8 @@ final class MiMallocByteBufAllocator {
             logger.debug("allocType: " + allocType +
                     ", effective heapStrategy: {}, instance: {}",
                     heapStrategyParam.name().toLowerCase(Locale.ROOT), this);
+            logger.debug("allocType: " + allocType + ", effective heapIdleTrim: {}, instance: {}",
+                    heapIdleTrimParam, this);
         }
     }
 
@@ -712,7 +716,7 @@ final class MiMallocByteBufAllocator {
             this.allocator = allocator;
             this.threadDelayedFreeList = new AtomicReference<>();
             this.sharedHeapWrap = sharedHeapWrap;
-            this.unSupportLocalThreadTrim = sharedHeapWrap != null || HEAP_TRIM_INTERVAL_MILLIS <= 0;
+            this.unSupportLocalThreadTrim = !allocator.heapIdleTrimParam || sharedHeapWrap != null;
             this.idleTickTask = () -> allocator.trimHeap((LocalHeap) this);
             this.miBufLocalDeque = new ArrayDequeBounded<>(1024);
             this.miBufCrossThreadsQueue = PlatformDependent.newFixedMpscQueue(1024);
@@ -2523,7 +2527,7 @@ final class MiMallocByteBufAllocator {
     }
 
     private void triggerSharedHeapsTrimIfNeeded(LocalHeap heap) {
-        if (HEAP_TRIM_INTERVAL_MILLIS <= 0 || heap.sharedHeapWrap == null) {
+        if (!this.heapIdleTrimParam || heap.sharedHeapWrap == null) {
             return;
         }
         if (!sharedHeapsTrimTaskTriggered.get()
