@@ -144,7 +144,7 @@ final class MiMallocByteBufAllocator {
     private final AtomicBoolean sharedHeapsTrimTaskTriggered = new AtomicBoolean();
 
     // The number references the default value of `glibc.pthread.mutex_spin_count`, see:
-    // https://sourceware.org/glibc/manual/latest/html_mono/libc.html#index-glibc_002epthread_002emutex_005fspin_005fcount
+    // https://sourceware.org/glibc/manual/latest/html_mono/libc.html
     private static final int MAX_SHARED_HEAP_LOCK_SPIN_COUNT = 100;
 
     private final AtomicInteger heapsScanLength;
@@ -2224,7 +2224,8 @@ final class MiMallocByteBufAllocator {
         int fastAllocQuota;
         final long delegateMemoryAddress;
 
-        PageHotFields(Segment segment, AbstractByteBuf delegate, MiMallocByteBufAllocator allocator, long delegateMemoryAddress) {
+        PageHotFields(Segment segment, AbstractByteBuf delegate, MiMallocByteBufAllocator allocator,
+                      long delegateMemoryAddress) {
             this.segment = segment;
             this.delegate = delegate;
             this.allocator = allocator;
@@ -2320,7 +2321,8 @@ final class MiMallocByteBufAllocator {
                     // so free it now.
                     heap.pageFree(this, heap.heapPageQueueOf(this));
                 } else if (this.usedBlocks == 0 // An empty page is always moved back.
-                        || this.capacityBlocks - this.usedBlocks >= this.capacityBlocks >>> PAGE_UNFULL_MIN_FREE_SHIFT) {
+                        || this.capacityBlocks - this.usedBlocks
+                        >= this.capacityBlocks >>> PAGE_UNFULL_MIN_FREE_SHIFT) {
                     pageUnfull(heap);
                 }
             }
@@ -2753,7 +2755,9 @@ final class MiMallocByteBufAllocator {
                     }
                 } while (!threadFreeList.compareAndSet(xCurrent, Page.tf(NO_DELAYED_FREE, Page.tfBlock(xCurrent))));
             }
-            if (wakeHeap != null) {
+            if (heapIdleTrimParam && wakeHeap != null && wakeHeap.sharedHeapWrap == null) {
+                // Not when the idle trim is off, nor for a shared heap: they have no ticks to wake
+                // (`mi-shared-heaps-trim` trims the shared heaps).
                 // The first delayed free since the owner took the list: wake its ticks if they have stopped.
                 // Each page sends its first free of a batch here (the owner resets its flag to `USE_DELAYED_FREE`
                 // when it frees that block), and a full page is only freed through here. Done after the flag reset,
