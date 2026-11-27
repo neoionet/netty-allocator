@@ -1354,7 +1354,9 @@ final class MiMallocByteBufAllocator {
             // Not the full queue: an empty page never stays there (see `heapVisitPages`).
             for (int i = 1; i < PAGE_QUEUE_BIN_FULL_INDEX; i++) {
                 PageQueue pq = this.pageQueues[i];
-                Page page = pq.firstPage;
+                // Keep the first page of each queue: its size class allocates from it next. Freeing it would only
+                // make that class take a fresh page, which may in turn free the empty first page of another class.
+                Page page = pq.firstPage == null ? null : pq.firstPage.nextPage;
                 while (page != null) {
                     Page next = page.nextPage; // Saved: the page is removed from the queue if freed.
                     // `usedBlocks` counts the blocks in the thread-free list too: 0 means no block is pending there.
