@@ -3,6 +3,7 @@ package io.github.neoionet.netty.mimalloc;
 import io.netty.util.NettyRuntime;
 import io.netty.util.internal.MathUtil;
 import io.netty.util.internal.ObjectUtil;
+import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.SystemPropertyUtil;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
@@ -39,9 +40,21 @@ public final class MiMallocOption {
     private static final String SEGMENT_CACHE_SIZE_PROP_KEY =
             "io.github.neoionet.allocator.mimalloc.segment.cache.size.mib";
 
-    private static final int DEFAULT_SEGMENT_CACHE_SIZE_IN_MIB = 1024;
+    private static final long MAX_DEFAULT_SEGMENT_CACHE_SIZE_IN_BYTES = 1024L * MiB;
 
-    private static final int MAX_SEGMENT_CACHE_SIZE_IN_MIB = 1024;
+    // A quarter of the maximum direct memory, at most 1 GiB.
+    private static final long DEFAULT_DIRECT_SEGMENT_CACHE_SIZE_IN_BYTES =
+            defaultSegmentCacheSizeInBytes(PlatformDependent.maxDirectMemory(), 4);
+
+    // An eighth of the maximum heap, at most 1 GiB: the cached segments are byte arrays that the GC cannot reclaim.
+    private static final long DEFAULT_HEAP_SEGMENT_CACHE_SIZE_IN_BYTES =
+            defaultSegmentCacheSizeInBytes(Runtime.getRuntime().maxMemory(), 8);
+
+    // No lower bound: a floor would take a larger share of a small heap or direct memory than the fraction.
+    // In bytes, not MiB, so that it is not rounded twice; the allocator rounds it down to whole segments.
+    private static long defaultSegmentCacheSizeInBytes(long maxBytes, int divisor) {
+        return maxBytes <= 0 ? 0 : Math.min(maxBytes / divisor, MAX_DEFAULT_SEGMENT_CACHE_SIZE_IN_BYTES);
+    }
 
     // Allowed segment size: {1, 2, 4, 8, 16, 32} MiB.
     static int calculateSegmentSizeInBytes(int segmentSizeInMiB) {
@@ -59,19 +72,13 @@ public final class MiMallocOption {
         return calculateSegmentSizeInBytes(Integer.parseInt(raw));
     }
 
-    // Free segments kept for reuse per heap, in MiB, at most 1024; any value above 0 keeps at least one segment.
     // 0 keeps none: every segment that becomes empty is freed, and a new one is allocated (and zeroed) when needed.
-    static int calculateSegmentCacheSizeInBytes(int segmentCacheSizeInMiB) {
+    static long calculateSegmentCacheSizeInBytes(int segmentCacheSizeInMiB) {
         ObjectUtil.checkPositiveOrZero(segmentCacheSizeInMiB, "segmentCacheSizeInMiB");
-        if (segmentCacheSizeInMiB > MAX_SEGMENT_CACHE_SIZE_IN_MIB) {
-            logger.warn("segmentCacheSizeInMiB {} exceeds the maximum, using {}",
-                    segmentCacheSizeInMiB, MAX_SEGMENT_CACHE_SIZE_IN_MIB);
-            segmentCacheSizeInMiB = MAX_SEGMENT_CACHE_SIZE_IN_MIB;
-        }
-        return segmentCacheSizeInMiB * MiB;
+        return ((long) segmentCacheSizeInMiB) * MiB;
     }
 
-    private static int parseSegmentCacheSizeInBytes(String raw) {
+    private static long parseSegmentCacheSizeInBytes(String raw) {
         return calculateSegmentCacheSizeInBytes(Integer.parseInt(raw));
     }
 
@@ -110,10 +117,13 @@ public final class MiMallocOption {
         return withPropertyContext(MAX_SHARED_HEAP_WRAPS_LENGTH_PROP_KEY, value, () -> parseMaxHeapWrapsLength(value));
     }
 
-    static int getDefaultSegmentCacheSizeInBytes() {
-        String value = SystemPropertyUtil.get(SEGMENT_CACHE_SIZE_PROP_KEY,
-                String.valueOf(DEFAULT_SEGMENT_CACHE_SIZE_IN_MIB)).trim();
-        return withPropertyContext(SEGMENT_CACHE_SIZE_PROP_KEY, value, () -> parseSegmentCacheSizeInBytes(value));
+    static long getDefaultSegmentCacheSizeInBytes(boolean isDirect) {
+        String value = SystemPropertyUtil.get(SEGMENT_CACHE_SIZE_PROP_KEY);
+        if (value == null) {
+            return isDirect ? DEFAULT_DIRECT_SEGMENT_CACHE_SIZE_IN_BYTES : DEFAULT_HEAP_SEGMENT_CACHE_SIZE_IN_BYTES;
+        }
+        String trimmed = value.trim();
+        return withPropertyContext(SEGMENT_CACHE_SIZE_PROP_KEY, trimmed, () -> parseSegmentCacheSizeInBytes(trimmed));
     }
 
     static boolean getDefaultHeapIdleTrim() {

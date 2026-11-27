@@ -183,7 +183,8 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
         PageSearchStrategy pageSearchStrategy = getDefaultPageSearchStrategy();
         int maxSharedHeapWrapsLength = getDefaultMaxSharedHeapWrapsLength();
         HeapStrategy heapStrategy = getDefaultHeapStrategy();
-        int segmentCacheSizeInBytes = getDefaultSegmentCacheSizeInBytes();
+        long directSegmentCacheSizeInBytes = getDefaultSegmentCacheSizeInBytes(true);
+        long heapSegmentCacheSizeInBytes = getDefaultSegmentCacheSizeInBytes(false);
         boolean heapIdleTrim = getDefaultHeapIdleTrim();
 
         private Builder() {
@@ -196,8 +197,10 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
                         maxSharedHeapWrapsLength, this);
                 logger.debug("Default heapStrategy: {}, instance: {}",
                         heapStrategy.name().toLowerCase(Locale.ROOT), this);
-                logger.debug("Default segmentCacheSizeInMiB: {}, instance: {}",
-                        segmentCacheSizeInBytes / MiB, this);
+                logger.debug("Default directSegmentCacheSizeInBytes: {}, instance: {}",
+                        directSegmentCacheSizeInBytes, this);
+                logger.debug("Default heapSegmentCacheSizeInBytes: {}, instance: {}",
+                        heapSegmentCacheSizeInBytes, this);
                 logger.debug("Default heapIdleTrim: {}, instance: {}", heapIdleTrim, this);
             }
         }
@@ -215,17 +218,26 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
         }
 
         /**
-         * Sets how much memory of free segments each heap keeps for reuse, in MiB (default 1024, at most 1024;
-         * larger values are clamped with a warning).
+         * Sets how much memory of free segments is kept for reuse, in MiB.
          * <p>
-         * Any value above 0 keeps at least one segment. 0 keeps none: use it only when memory matters more than
-         * allocation speed and the live set is steady.
+         * The cache is shared by all the heaps of the allocator, whatever thread freed a segment: any thread can reuse
+         * it. The direct and the heap allocator each have a cache of this size. Every decay interval (10 s), up to half
+         * of the cached segments are freed, the oldest first, among those that stayed in the cache for a whole
+         * interval.
+         * <p>
+         * Default: a quarter of the maximum direct memory for the direct allocator,
+         * and an eighth of the maximum heap for the heap allocator, between 32 MiB and 1 GiB.
+         * 0 keeps none: every segment that becomes empty is freed, and a new one is allocated (and zeroed) when
+         * needed; use it only when memory matters more than allocation speed.
+         * The default can be set with {@code -Dio.github.neoionet.allocator.mimalloc.segment.cache.size.mib},
+         * which then applies to both allocators.
          *
-         * @param segmentCacheSizeInMiB the free segments to keep per heap, in MiB
+         * @param segmentCacheSizeInMiB the free segments to keep for reuse, in MiB, per allocator
          * @return this builder
          */
         public Builder segmentCacheSizeInMiB(int segmentCacheSizeInMiB) {
-            this.segmentCacheSizeInBytes = calculateSegmentCacheSizeInBytes(segmentCacheSizeInMiB);
+            this.directSegmentCacheSizeInBytes = this.heapSegmentCacheSizeInBytes
+                    = calculateSegmentCacheSizeInBytes(segmentCacheSizeInMiB);
             return this;
         }
 
@@ -247,12 +259,25 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
         }
 
         /**
-         * Sets whether cached memory is released while the heaps are idle (default {@code true}): by a task on the
-         * event loop of each thread-local heap, and by a JVM-wide daemon thread ({@code mi-shared-heaps-trim}) for
-         * the shared heaps. When {@code false}, cached memory is only released by later allocations of the same heap.
+         * Sets whether cached memory is released while the allocator is idle (default {@code true}).
+         * <p>
+         * When {@code true}:
+         * <ul>
+         *   <li>each thread-local heap of an event loop is trimmed by a task on its own event loop, which stops once
+         *       the heap has nothing more to release, so that the event loop can still suspend;</li>
+         *   <li>a JVM-wide daemon thread ({@code mi-shared-heaps-trim}), started once the allocator allocates its first
+         *       segment, trims the shared heaps, skipping the busy ones;</li>
+         *   <li>every decay interval (10 seconds), up to half of the segments that stayed in the shared cache of free
+         *       segments for a whole interval are freed, the oldest first, by an event loop's trim task or the daemon
+         *       thread, whichever comes first.</li>
+         * </ul>
+         * When {@code false}, no task or thread is started: memory cached by a heap is only released by later
+         * allocations of that heap; the shared cache of free segments by later allocations of any heap, a few
+         * segments at a time, and when an event loop thread exits.
+         * <p>
          * The default can be set with {@code -Dio.github.neoionet.allocator.mimalloc.heap.idle.trim}.
          *
-         * @param heapIdleTrim whether to release cached memory while the heaps are idle
+         * @param heapIdleTrim whether to release cached memory while the allocator is idle
          * @return this builder
          */
         public Builder heapIdleTrim(boolean heapIdleTrim) {

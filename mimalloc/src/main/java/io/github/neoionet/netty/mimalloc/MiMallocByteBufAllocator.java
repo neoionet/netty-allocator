@@ -129,7 +129,7 @@ final class MiMallocByteBufAllocator {
     private final PageSearchStrategy pageSearchStrategyParam;
     private final int maxSharedHeapWrapsLengthParam;
     private final HeapStrategy heapStrategyParam;
-    private final int segmentCacheSizeInBytesParam;
+    private final int maxCacheSegmentsCountParam;
     private final boolean heapIdleTrimParam;
 
     private static final Object RECLAIMED_SEGMENT_FLAG = new Object();
@@ -181,6 +181,14 @@ final class MiMallocByteBufAllocator {
 
     private static final int HEAP_QUIET_TICKS_BEFORE_STOP = 3;
 
+    private final ConcurrentLinkedDeque<Segment> reservedNormalSegmentDeque;
+    private final AtomicInteger reservedNormalSegmentCount = new AtomicInteger();
+    private final AtomicLong lastSegmentsDecayNano = new AtomicLong(System.nanoTime());
+    // Segments the current pass may still free: half of the cache when the pass started, less those freed since.
+    private final AtomicInteger decayBudget = new AtomicInteger();
+    // One caller at a time: they would race on the tail.
+    private final AtomicBoolean decaying = new AtomicBoolean();
+
     private static final ScheduledThreadPoolExecutor SHARED_HEAPS_TRIM_EXECUTOR =
             new ScheduledThreadPoolExecutor(1, r -> {
                 Thread t = new Thread(r, "mi-shared-heaps-trim");
@@ -195,21 +203,27 @@ final class MiMallocByteBufAllocator {
     }
 
     /**
-     * A tick collects the heap and decays its cached segments while the owner thread is idle. At most one tick is
-     * pending per heap: {@code tickPending} is a token, taken by a CAS before a tick is scheduled, and returned when
-     * the ticks stop. A tick always runs on the owner thread, whoever scheduled it.
+     * A tick collects the heap while its owner thread, an event loop, is idle, and gives the allocator's shared cache
+     * of free segments a chance to decay (see {@link #decayReservedSegments}). The ticks go on while the heap still
+     * changes: it allocated through the slow path since the last tick, or a collect freed some of its pages; they
+     * stop after {@code HEAP_QUIET_TICKS_BEFORE_STOP} quiet ticks. The shared cache does not keep them going: it is
+     * also decayed by allocations and by {@code mi-shared-heaps-trim}. Shared heaps have no ticks: that thread trims
+     * them.
+     * <p>
+     * At most one tick is pending per heap: {@code tickPending} is a token, taken by a CAS before a tick is scheduled,
+     * and returned when the ticks stop. A tick always runs on the owner thread, whoever scheduled it.
      * <pre>{@code
      * [owner thread]
      *   initialValue
      *   allocateGeneric
      *   freeBlockLocal (a page becomes empty)
-     *   trimHeap (stopped, delayed list not empty)
+     *   trimHeap (after returning the token, if the delayed list is not empty)
      *       -> ensureIdleTick (CAS takes the token)
      *           -> scheduleIdleTick
      *               -> executor.schedule(idleTickTask)
      *
      * [freeing thread]
-     *   freeBlockDelayedMt (delayed list goes from empty to non-empty)
+     *   freeBlockDelayedMt (delayed list goes from empty to non-empty; idle trim on, not a shared heap)
      *       -> scheduleIdleTickFromDelayedFree (CAS takes the token)
      *           -> executor.schedule(idleTickTask)
      *
@@ -256,7 +270,11 @@ final class MiMallocByteBufAllocator {
         this.chunkHasArray = chunkAllocator.chunkHasArray();
         this.chunkHasMemoryAddress = chunkAllocator.chunkHasMemoryAddress();
         this.segmentSizeInBytesParam = builder.segmentSizeInBytes;
-        this.segmentCacheSizeInBytesParam = builder.segmentCacheSizeInBytes;
+        long cacheBytes = allocType == AllocType.DIRECT
+                ? builder.directSegmentCacheSizeInBytes : builder.heapSegmentCacheSizeInBytes;
+        // Rounded down to whole segments: a cache smaller than one segment keeps none, so that it never holds more
+        // than the size set (or the fraction of the memory that the default stands for).
+        this.maxCacheSegmentsCountParam = (int) Math.min(Integer.MAX_VALUE, cacheBytes / segmentSizeInBytesParam);
         this.heapIdleTrimParam = builder.heapIdleTrim;
         this.sliceCountParam = segmentSizeInBytesParam / SEGMENT_SLICE_SIZE;
         // segmentSizeInBytesParam / 2
@@ -265,6 +283,7 @@ final class MiMallocByteBufAllocator {
         this.maxSharedHeapWrapsLengthParam = builder.maxSharedHeapWrapsLength;
         this.heapStrategyParam = builder.heapStrategy;
         this.abandonedSegmentDeque = new ConcurrentLinkedDeque<>();
+        this.reservedNormalSegmentDeque = new ConcurrentLinkedDeque<>();
         this.THREAD_LOCAL_HEAP = new FastThreadLocal<LocalHeap>() {
             @Override
             protected LocalHeap initialValue() {
@@ -302,6 +321,8 @@ final class MiMallocByteBufAllocator {
                     heapStrategyParam.name().toLowerCase(Locale.ROOT), this);
             logger.debug("allocType: " + allocType + ", effective heapIdleTrim: {}, instance: {}",
                     heapIdleTrimParam, this);
+            logger.debug("allocType: " + allocType + ", effective maxCacheSegmentsCount: {}, instance: {}",
+                    maxCacheSegmentsCountParam, this);
         }
     }
 
@@ -342,6 +363,7 @@ final class MiMallocByteBufAllocator {
         try {
             abandonAllSharedSegments();
             freeAllAbandonedSegments();
+            freeAllReservedSegments();
         } finally {
             super.finalize();
         }
@@ -568,6 +590,31 @@ final class MiMallocByteBufAllocator {
         }
     }
 
+    private int freeAllReservedSegments() {
+        Segment segment;
+        int freedCount = 0;
+        while ((segment = this.reservedNormalSegmentDeque.pollLast()) != null) {
+            this.reservedNormalSegmentCount.decrementAndGet();
+            freedCount++;
+            segment.deallocate();
+        }
+        return freedCount;
+    }
+
+    // Frees cached segments, the oldest first, until at least `bytes` were freed or the cache is empty.
+    // Returns whether any was freed: then the caller tries again, as the memory freed with the memory left
+    // may be enough.
+    private boolean tryFreeReservedSegments(int bytes) {
+        Segment segment;
+        long freedBytes = 0;
+        while (freedBytes < bytes && (segment = this.reservedNormalSegmentDeque.pollLast()) != null) {
+            this.reservedNormalSegmentCount.decrementAndGet();
+            freedBytes += segment.segmentSize;
+            segment.deallocate();
+        }
+        return freedBytes > 0;
+    }
+
     private void abandonAllSharedSegments() {
         LocalHeap heap;
         for (SharedHeapWrap sharedHeapWrap : this.sharedHeapWraps) {
@@ -696,9 +743,6 @@ final class MiMallocByteBufAllocator {
         final MiMallocByteBufAllocator allocator;
         final AtomicReference<DelayedBlock> threadDelayedFreeList;
 
-        final ArrayDequeBounded<Segment> reservedNormalSegmentDeque;
-        int coldReservedSegmentCount;
-        long lastSegmentsDecayNano = System.nanoTime();
         // The wrap that holds this heap and its lock, or null if this is a thread-local heap.
         final SharedHeapWrap sharedHeapWrap;
         final ArrayDequeBounded<MiByteBuf> miBufLocalDeque;
@@ -708,6 +752,7 @@ final class MiMallocByteBufAllocator {
         OutOfMemoryError lastOutOfMemoryError;
         final ArrayDequeBounded<int[]> cachePool;
         long lastHeapNormalCollectNano = System.nanoTime();
+        boolean abandon;
 
         LocalHeapFields(MiMallocByteBufAllocator allocator, SharedHeapWrap sharedHeapWrap) {
             this.segmentTld = new SegmentTld();
@@ -722,9 +767,6 @@ final class MiMallocByteBufAllocator {
             this.miBufCrossThreadsQueue = PlatformDependent.newFixedMpscQueue(1024);
             this.delayedBlockDeque = PlatformDependent.newFixedMpmcQueue(1024);
             this.cachePool = new ArrayDequeBounded<>(1024);
-            int maxReservedSegmentCount = allocator.segmentCacheSizeInBytesParam == 0 ? 0
-                    : Math.max(1, allocator.segmentCacheSizeInBytesParam / allocator.segmentSizeInBytesParam);
-            this.reservedNormalSegmentDeque = new ArrayDequeBounded<>(maxReservedSegmentCount);
             this.pageQueues = new PageQueue[] {
                     new PageQueue(1, 0), // placeholder, not used.
                     new PageQueue(1, 1), new PageQueue(2, 2),
@@ -805,8 +847,10 @@ final class MiMallocByteBufAllocator {
         }
 
         private void heapCollect(CollectType collectType) {
+            boolean isAbandon = collectType == ABANDON;
             // If during abandoning, mark all pages to no longer add to the delayed-free list
             if (collectType == ABANDON) {
+                this.abandon = true;
                 heapVisitPages(collectType, VISIT_TYPE_PAGE_MARK);
             }
             // Free all current thread's delayed blocks.
@@ -817,24 +861,11 @@ final class MiMallocByteBufAllocator {
             // Collect abandoned segments.
             boolean isCollectAllAbandoned = collectType == FORCE;
             abandonedCollect(isCollectAllAbandoned);
-            if (collectType == ABANDON) {
+            if (isAbandon) {
                 this.miBufLocalDeque.clear();
                 this.miBufCrossThreadsQueue.clear();
                 this.delayedBlockDeque.clear();
-                freeReservedSegment();
             }
-        }
-
-        void decayReservedSegments(long nowNano) {
-            Segment segment;
-            assert coldReservedSegmentCount <= reservedNormalSegmentDeque.size();
-            // Free half of the segments that have stayed in the cache since the last decay (the oldest, at the tail).
-            int n = (coldReservedSegmentCount + 1) >>> 1;
-            while (n-- > 0 && (segment = reservedNormalSegmentDeque.pollLast()) != null) {
-                segment.deallocate();
-            }
-            coldReservedSegmentCount = reservedNormalSegmentDeque.size();
-            lastSegmentsDecayNano = nowNano;
         }
 
         private void heapCollectNormal(long heapNormalCollectNano) {
@@ -876,11 +907,8 @@ final class MiMallocByteBufAllocator {
             int pagesBeforeCollect = pageCount;
             long now = System.nanoTime();
             heapCollectNormal(now);
-            // No slow-path allocation for a whole interval:
-            // none of the cached segments was needed, so all are cold.
-            coldReservedSegmentCount = reservedNormalSegmentDeque.size();
-            decayReservedSegments(now);
-            if (!reservedNormalSegmentDeque.isEmpty() || pageCount != pagesBeforeCollect) {
+            allocator.decayReservedSegments(now, 8);
+            if (pageCount != pagesBeforeCollect) {
                 quietTicks = 0;
                 return true;
             }
@@ -891,14 +919,6 @@ final class MiMallocByteBufAllocator {
             }
             // Stop if quietTicks >= HEAP_QUIET_TICKS_BEFORE_STOP, let the event loop have a chance to suspend.
             return quietTicks < HEAP_QUIET_TICKS_BEFORE_STOP;
-        }
-
-        private void freeReservedSegment() {
-            Segment segment;
-            while ((segment = this.reservedNormalSegmentDeque.pollFirst()) != null) {
-                segment.deallocate();
-            }
-            this.coldReservedSegmentCount = 0;
         }
 
         // Collect abandoned segments
@@ -1302,7 +1322,10 @@ final class MiMallocByteBufAllocator {
 
         private boolean tryCollectBeforeNewSegment() {
             long now = System.nanoTime();
-            if (now - lastHeapNormalCollectNano < SEGMENT_ALLOC_COLLECT_NANOS_INTERVAL) {
+            // Collect at once when other threads freed blocks into this heap since the last collect (they wait in
+            // the delayed list), as those may free a large enough span; otherwise not more often than the interval.
+            if (threadDelayedFreeList.get() == null
+                    && now - lastHeapNormalCollectNano < SEGMENT_ALLOC_COLLECT_NANOS_INTERVAL) {
                 return false;
             }
             heapCollectNormal(now);
@@ -1474,8 +1497,13 @@ final class MiMallocByteBufAllocator {
                 segmentClearFreeSpanFromQueue(segment);
                 // Expensive assertion: the spanQueues should not contain this segment anymore.
                 assert assertSegmentNotExistInSpanQueue(segment);
-                LocalHeap heap = segment.ownerHeap;
-                if (heap.reservedNormalSegmentDeque.offerFirst(segment)) {
+                // Not atomic: concurrent frees may go over the limit by a few segments.
+                if (!abandon && allocator.reservedNormalSegmentCount.get() < allocator.maxCacheSegmentsCountParam) {
+                    segment.freeAtNano = System.nanoTime();
+                    segment.ownerHeap = null;
+                    segment.ownerThreadId = NO_OWNER_THREAD_ID;
+                    allocator.reservedNormalSegmentDeque.offerFirst(segment);
+                    allocator.reservedNormalSegmentCount.incrementAndGet();
                     return;
                 }
             }
@@ -1643,19 +1671,20 @@ final class MiMallocByteBufAllocator {
         // Allocate a segment.
         private Segment segmentAllocNormal() {
             Segment segment;
-            if ((segment = reservedNormalSegmentDeque.pollFirst()) == null) {
-                this.coldReservedSegmentCount = 0;
+            if ((segment = allocator.reservedNormalSegmentDeque.pollFirst()) == null) {
                 int segmentSizeInBytesParam = allocator.segmentSizeInBytesParam;
                 AbstractByteBuf chunk = allocator.newChunk(segmentSizeInBytesParam, true, this);
                 if (chunk == null) {
                     return null; // Signal OOM
                 }
-                allocator.triggerSharedHeapsTrimIfNeeded(this);
+                allocator.triggerSharedHeapsAndCacheSegmentsTrimIfNeeded();
                 segment = new Segment(allocator, segmentSizeInBytesParam, allocator.sliceCountParam, SEGMENT_NORMAL,
                         chunk, this);
             } else {
+                allocator.reservedNormalSegmentCount.decrementAndGet();
                 segment.ownerThreadId = Thread.currentThread().getId();
-                this.coldReservedSegmentCount = Math.min(coldReservedSegmentCount, reservedNormalSegmentDeque.size());
+                segment.ownerHeap = this;
+                segment.abandonedVisits = 0;
             }
             // Initialize the initial free spans.
             segmentSpanFree(segment, 0, segment.sliceEntries);
@@ -2466,16 +2495,28 @@ final class MiMallocByteBufAllocator {
      * @param heap the heap performing the allocation.
      */
     private AbstractByteBuf newChunk(int size, boolean returnNullOnOom, LocalHeap heap) {
-        AbstractByteBuf buf;
+        AbstractByteBuf buf = null;
         try {
             buf = chunkAllocator.allocate(size, size);
         } catch (OutOfMemoryError e) {
-            if (returnNullOnOom) {
-                heap.lastOutOfMemoryError = e;
-                return null; // Signal OOM
+            OutOfMemoryError outOfMemoryError = e;
+            // The cache may hold the memory this needs: try to free that much and try once more.
+            if (tryFreeReservedSegments(size)) {
+                try {
+                    buf = chunkAllocator.allocate(size, size);
+                } catch (OutOfMemoryError e2) {
+                    outOfMemoryError = e2;
+                    outOfMemoryError.addSuppressed(e);
+                }
             }
-            // Do not touch `heap`: this path may run on a shared heap without holding its lock.
-            throw e;
+            if (buf == null) {
+                if (returnNullOnOom) {
+                    heap.lastOutOfMemoryError = outOfMemoryError;
+                    return null; // Signal OOM
+                }
+                // Do not touch `heap`: this path may run on a shared heap without holding its lock.
+                throw outOfMemoryError;
+            }
         }
         this.usedMemory.addAndGet(size);
         return buf;
@@ -2526,14 +2567,18 @@ final class MiMallocByteBufAllocator {
                 }
             }
         }
+        try {
+            decayReservedSegments(System.nanoTime(), Integer.MAX_VALUE);
+        } catch (Throwable t) {
+            logger.warn("Segment cache trim failed", t);
+        }
     }
 
-    private void triggerSharedHeapsTrimIfNeeded(LocalHeap heap) {
-        if (!this.heapIdleTrimParam || heap.sharedHeapWrap == null) {
+    private void triggerSharedHeapsAndCacheSegmentsTrimIfNeeded() {
+        if (!this.heapIdleTrimParam || sharedHeapsTrimTaskTriggered.get()) {
             return;
         }
-        if (!sharedHeapsTrimTaskTriggered.get()
-                && sharedHeapsTrimTaskTriggered.compareAndSet(false, true)) {
+        if (sharedHeapsTrimTaskTriggered.compareAndSet(false, true)) {
             try {
                 SharedHeapTrimTask task = new SharedHeapTrimTask(this);
                 task.future = SHARED_HEAPS_TRIM_EXECUTOR.scheduleWithFixedDelay(task,
@@ -2619,6 +2664,7 @@ final class MiMallocByteBufAllocator {
         private final AtomicLong hugeSegmentFreeOwnerThreadId = new AtomicLong(NO_OWNER_THREAD_ID);
         // The delegate's memory address, or 0 when it has none: it doesn't change while the delegate is in use.
         final long delegateMemoryAddress;
+        long freeAtNano;
 
         Segment(MiMallocByteBufAllocator parent, int segmentSize, int segmentSlices, SegmentKind kind,
                 AbstractByteBuf delegate, LocalHeap heap) {
@@ -3009,8 +3055,12 @@ final class MiMallocByteBufAllocator {
         if (!page.isHuge && page.reservedBlocks == page.usedBlocks) {
             heap.pageToFull(page, heap.heapPageQueueOf(page));
         }
-        if (heapCollected && heapNormalCollectNano - heap.lastSegmentsDecayNano > SEGMENTS_DECAY_NANOS_INTERVAL) {
-            heap.decayReservedSegments(heapNormalCollectNano);
+        if (heapCollected) {
+            try {
+                decayReservedSegments(heapNormalCollectNano, 8);
+            } catch (Throwable t) {
+                logger.warn("Segment cache trim failed", t);
+            }
         }
         return byteBuf;
     }
@@ -3028,6 +3078,47 @@ final class MiMallocByteBufAllocator {
         buf.init(page, block, size, maxCapacity, isReAlloc, delegate, chunkHasArray, chunkHasMemoryAddress);
         page.usedBlocks++;
         return buf;
+    }
+
+    // Frees up to half of the cached segments per interval, the oldest first (at the tail), among those that stayed
+    // in the cache for a whole interval: at most `maxPerCall` per call; the next callers go on with the same pass.
+    private void decayReservedSegments(long nowNano, int maxPerCall) {
+        boolean isAboveInterval = nowNano - lastSegmentsDecayNano.get() >= SEGMENTS_DECAY_NANOS_INTERVAL;
+        if (isAboveInterval || decayBudget.get() > 0) {
+            if (!decaying.compareAndSet(false, true)) {
+                return;
+            }
+            try {
+                // Checked again under `decaying`:
+                // another caller may have updated `lastSegmentsDecayNano` before the CAS.
+                if (nowNano - lastSegmentsDecayNano.get() >= SEGMENTS_DECAY_NANOS_INTERVAL) {
+                    lastSegmentsDecayNano.set(nowNano);
+                    decayBudget.set(Math.max(1, reservedNormalSegmentCount.get() >> 1));  // renew decayBudget
+                }
+                int maxFreedCount = Math.min(maxPerCall, decayBudget.get());
+                int freed = 0;
+                Segment segment;
+                while (freed < maxFreedCount && (segment = reservedNormalSegmentDeque.peekLast()) != null
+                        && nowNano - segment.freeAtNano > SEGMENTS_DECAY_NANOS_INTERVAL) {
+                    segment = reservedNormalSegmentDeque.pollLast();
+                    if (segment == null) {
+                        break;
+                    }
+                    if (nowNano - segment.freeAtNano <= SEGMENTS_DECAY_NANOS_INTERVAL) {
+                        // The one seen was taken by an allocation in between, and this one is newer: keep it.
+                        reservedNormalSegmentDeque.offerLast(segment);
+                        break;
+                    }
+                    reservedNormalSegmentCount.decrementAndGet();
+                    segment.deallocate();
+                    freed++;
+                }
+                // Stopped before `maxFreedCount`: nothing old enough is left, so this pass is over.
+                decayBudget.set(freed < maxFreedCount ? 0 : decayBudget.get() - freed);
+            } finally {
+                decaying.set(false);
+            }
+        }
     }
 
     private static int pageBin(Page page) {
