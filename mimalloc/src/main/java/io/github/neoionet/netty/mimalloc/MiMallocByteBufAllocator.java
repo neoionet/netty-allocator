@@ -752,7 +752,8 @@ final class MiMallocByteBufAllocator {
         OutOfMemoryError lastOutOfMemoryError;
         final ArrayDequeBounded<int[]> cachePool;
         long lastHeapNormalCollectNano = System.nanoTime();
-        boolean abandon;
+        // Set once the heap is abandoned: its empty segments are freed rather than cached.
+        boolean abandoned;
 
         LocalHeapFields(MiMallocByteBufAllocator allocator, SharedHeapWrap sharedHeapWrap) {
             this.segmentTld = new SegmentTld();
@@ -849,8 +850,8 @@ final class MiMallocByteBufAllocator {
         private void heapCollect(CollectType collectType) {
             boolean isAbandon = collectType == ABANDON;
             // If during abandoning, mark all pages to no longer add to the delayed-free list
-            if (collectType == ABANDON) {
-                this.abandon = true;
+            if (isAbandon) {
+                this.abandoned = true;
                 heapVisitPages(collectType, VISIT_TYPE_PAGE_MARK);
             }
             // Free all current thread's delayed blocks.
@@ -1322,8 +1323,8 @@ final class MiMallocByteBufAllocator {
 
         private boolean tryCollectBeforeNewSegment() {
             long now = System.nanoTime();
-            // Collect at once when other threads freed blocks into this heap since the last collect (they wait in
-            // the delayed list), as those may free a large enough span; otherwise not more often than the interval.
+            // Collect at once when other threads freed blocks into this heap since the delayed list was last taken
+            // (they wait in it), as those may free a large enough span; otherwise not more often than the interval.
             if (threadDelayedFreeList.get() == null
                     && now - lastHeapNormalCollectNano < SEGMENT_ALLOC_COLLECT_NANOS_INTERVAL) {
                 return false;
@@ -1498,7 +1499,7 @@ final class MiMallocByteBufAllocator {
                 // Expensive assertion: the spanQueues should not contain this segment anymore.
                 assert assertSegmentNotExistInSpanQueue(segment);
                 // Not atomic: concurrent frees may go over the limit by a few segments.
-                if (!abandon && allocator.reservedNormalSegmentCount.get() < allocator.maxCacheSegmentsCountParam) {
+                if (!abandoned && allocator.reservedNormalSegmentCount.get() < allocator.maxCacheSegmentsCountParam) {
                     segment.freeAtNano = System.nanoTime();
                     segment.ownerHeap = null;
                     segment.ownerThreadId = NO_OWNER_THREAD_ID;
@@ -2505,8 +2506,10 @@ final class MiMallocByteBufAllocator {
                 try {
                     buf = chunkAllocator.allocate(size, size);
                 } catch (OutOfMemoryError e2) {
+                    if (e2 != e) {
+                        e2.addSuppressed(e);
+                    }
                     outOfMemoryError = e2;
-                    outOfMemoryError.addSuppressed(e);
                 }
             }
             if (buf == null) {
