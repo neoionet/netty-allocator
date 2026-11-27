@@ -222,7 +222,8 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
          * <p>
          * The cache is shared by all the heaps of the allocator, whatever thread freed a segment: any thread can reuse
          * it. The direct and the heap allocator each have a cache of this size, rounded down to whole segments. A
-         * segment that becomes empty while the cache is full, or in the heap of a thread that exits, is freed instead.
+         * segment that becomes empty while the cache is full, or (when {@link #heapIdleTrim(boolean)} is off) in the
+         * heap of a thread that exits, is freed instead.
          * Every decay interval (10 s), up to half of the cached segments are freed, the oldest first, among those that
          * stayed in the cache for a whole interval (see {@link #heapIdleTrim(boolean)} for who does it). When a new
          * segment cannot be allocated for lack of memory, cached segments are freed first and the allocation is tried
@@ -277,7 +278,7 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
          * </ul>
          * When {@code false}, no task or thread is started: memory cached by a heap is only released by later
          * allocations of that heap; the shared cache of free segments by later allocations of any heap, a few
-         * segments at a time.
+         * segments at a time. A heap whose thread exits then frees its empty segments rather than caching them.
          * <p>
          * The default can be set with {@code -Dio.github.neoionet.allocator.mimalloc.heap.idle.trim}.
          *

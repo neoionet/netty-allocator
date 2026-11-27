@@ -752,8 +752,10 @@ final class MiMallocByteBufAllocator {
         OutOfMemoryError lastOutOfMemoryError;
         final ArrayDequeBounded<int[]> cachePool;
         long lastHeapNormalCollectNano = System.nanoTime();
-        // Set once the heap is abandoned: its empty segments are freed rather than cached.
-        boolean abandoned;
+        // Set when the heap is abandoned while the idle trim is off: its empty segments are then freed rather than
+        // cached, as nothing would decay the cache if no allocation followed (with the idle trim on,
+        // `mi-shared-heaps-trim` does, and the segments stay for reuse, for example by a resumed event loop).
+        boolean freeSegmentsOnAbandon;
         // A local free emptied a page since the last collect: the page waits in its queue (see `freeBlockLocal`).
         // Written in the heap critical section, like the page queues.
         boolean hasEmptyPages;
@@ -854,7 +856,9 @@ final class MiMallocByteBufAllocator {
             boolean isAbandon = collectType == ABANDON;
             // If during abandoning, mark all pages to no longer add to the delayed-free list
             if (isAbandon) {
-                this.abandoned = true;
+                if (!allocator.heapIdleTrimParam) {
+                    this.freeSegmentsOnAbandon = true;
+                }
                 heapVisitPages(collectType, VISIT_TYPE_PAGE_MARK);
             }
             // Free all current thread's delayed blocks.
@@ -1529,8 +1533,9 @@ final class MiMallocByteBufAllocator {
                 segmentClearFreeSpanFromQueue(segment);
                 // Expensive assertion: the spanQueues should not contain this segment anymore.
                 assert assertSegmentNotExistInSpanQueue(segment);
-                // Not atomic: concurrent frees may go over the limit by a few segments.
-                if (!abandoned && allocator.reservedNormalSegmentCount.get() < allocator.maxCacheSegmentsCountParam) {
+                if (!freeSegmentsOnAbandon
+                        // Not atomic: concurrent frees may go over the limit by a few segments.
+                        && allocator.reservedNormalSegmentCount.get() < allocator.maxCacheSegmentsCountParam) {
                     segment.freeAtNano = System.nanoTime();
                     segment.ownerHeap = null;
                     segment.ownerThreadId = NO_OWNER_THREAD_ID;
