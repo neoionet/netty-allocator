@@ -221,12 +221,15 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
          * Sets how much memory of free segments is kept for reuse, in MiB.
          * <p>
          * The cache is shared by all the heaps of the allocator, whatever thread freed a segment: any thread can reuse
-         * it. The direct and the heap allocator each have a cache of this size. Every decay interval (10 s), up to half
-         * of the cached segments are freed, the oldest first, among those that stayed in the cache for a whole
-         * interval.
+         * it. The direct and the heap allocator each have a cache of this size, rounded down to whole segments. A
+         * segment that becomes empty while the cache is full, or in the heap of a thread that exits, is freed instead.
+         * Every decay interval (10 s), up to half of the cached segments are freed, the oldest first, among those that
+         * stayed in the cache for a whole interval (see {@link #heapIdleTrim(boolean)} for who does it). When a new
+         * segment cannot be allocated for lack of memory, cached segments are freed first and the allocation is tried
+         * once more.
          * <p>
          * Default: a quarter of the maximum direct memory for the direct allocator,
-         * and an eighth of the maximum heap for the heap allocator, between 32 MiB and 1 GiB.
+         * and an eighth of the maximum heap for the heap allocator, at most 1 GiB.
          * 0 keeps none: every segment that becomes empty is freed, and a new one is allocated (and zeroed) when
          * needed; use it only when memory matters more than allocation speed.
          * The default can be set with {@code -Dio.github.neoionet.allocator.mimalloc.segment.cache.size.mib},
@@ -268,12 +271,13 @@ public final class MiByteBufAllocator extends AbstractByteBufAllocator
          *   <li>a JVM-wide daemon thread ({@code mi-shared-heaps-trim}), started once the allocator allocates its first
          *       segment, trims the shared heaps, skipping the busy ones;</li>
          *   <li>every decay interval (10 seconds), up to half of the segments that stayed in the shared cache of free
-         *       segments for a whole interval are freed, the oldest first, by an event loop's trim task or the daemon
-         *       thread, whichever comes first.</li>
+         *       segments for a whole interval are freed, the oldest first, by an event loop's trim task, the daemon
+         *       thread, or an allocation (a few segments at a time), whichever comes first: one pass per interval for
+         *       the whole allocator.</li>
          * </ul>
          * When {@code false}, no task or thread is started: memory cached by a heap is only released by later
          * allocations of that heap; the shared cache of free segments by later allocations of any heap, a few
-         * segments at a time, and when an event loop thread exits.
+         * segments at a time.
          * <p>
          * The default can be set with {@code -Dio.github.neoionet.allocator.mimalloc.heap.idle.trim}.
          *

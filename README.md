@@ -128,9 +128,9 @@ b.group(group)
     *   **Default value:** `2`
 
 *   **`-Dio.github.neoionet.allocator.mimalloc.segment.cache.size.mib`**
-    *   **Allowed Values:** `0` to `1024` (values above `1024` are clamped to `1024` with a warning)
-    *   **Description:** Sets how much memory of free segments each heap keeps for reuse, in MiB. The limit applies to **each heap**, so the memory kept can reach this value times the number of heaps. Any value above `0` keeps at least one segment; `0` keeps none.
-    *   **Default value:** `1024`
+    *   **Allowed Values:** `0` or more
+    *   **Description:** Sets how much memory of free segments is kept for reuse, in MiB. The cache is **shared by all the heaps** of an allocator: a segment freed by one thread can be reused by any other. The direct and the heap allocator each have a cache of this size, rounded down to whole segments. A segment that becomes empty while the cache is full, or in the heap of a thread that exits, is freed instead. Every decay interval (about 10 seconds), up to half of the cached segments are freed, the oldest first, among those that stayed in the cache for a whole interval. When a new segment cannot be allocated for lack of memory, cached segments are freed first and the allocation is tried once more. Who runs the decay depends on `heap.idle.trim` (see below). `0` keeps none: every segment that becomes empty is freed at once, and a new one is allocated (and zeroed) when needed; use it only when memory matters more than allocation speed.
+    *   **Default value:** a quarter of the maximum direct memory (`-XX:MaxDirectMemorySize`, or `-Dio.netty.maxDirectMemory` if set) for direct buffers, and an eighth of the maximum heap (`-Xmx`) for heap buffers, at most `1024` (1 GiB). Setting this property applies the same value to both.
 
 * **`-Dio.github.neoionet.allocator.mimalloc.maxSharedHeaps`**
     *   **Description:** Sets the max shared heaps count (rounded up to a power of two).
@@ -138,10 +138,11 @@ b.group(group)
 
 * **`-Dio.github.neoionet.allocator.mimalloc.heap.idle.trim`**
     *   **Allowed Values(case-insensitive):** `true`, `false` (any other value fails with an `IllegalArgumentException`)
-    *   **Description:** Sets whether cached memory is released while the heaps are idle. When enabled, about every 10 seconds the free segments cached by an idle heap are halved, until none are left:
-    * * thread-local heaps are trimmed by a task on their own EventLoop, which stops once the heap has nothing more to release, so the EventLoop can still suspend.
-    * * shared heaps are trimmed by a single JVM-wide daemon thread, `mi-shared-heaps-trim`, which is only started once a shared heap is used, skips the heaps that are busy, and exits about a minute after no allocator is left.
-    * * When disabled, no task or thread is started, and cached memory is only released by later allocations of the same heap.
+    *   **Description:** Sets whether cached memory is released while the allocator is idle. When enabled, about every 10 seconds the memory an idle heap caches is trimmed, and up to half of the free segments that stayed in the shared segment cache for a whole interval are freed, the oldest first:
+    * * thread-local heaps of EventLoop threads are trimmed by a task on their own EventLoop, which stops once the heap has nothing more to release, so the EventLoop can still suspend.
+    * * shared heaps are trimmed by a single JVM-wide daemon thread, `mi-shared-heaps-trim`, which is only started once the allocator allocates its first segment, skips the heaps that are busy, and exits about a minute after no allocator is left.
+    * * the shared segment cache is trimmed by whichever comes first: an EventLoop's trim task, the daemon thread, or an allocation (a few segments at a time); one pass per interval for the whole allocator. The daemon thread makes sure it is trimmed even when no EventLoop is idle and nothing allocates.
+    * * When disabled, no task or thread is started: the memory a heap caches is only released by later allocations of that heap; the shared segment cache by later allocations of any heap, a few segments at a time.
     *   **Default value:** `true`
 
 ### 2. Instance level configuration, which can override the global configuration:
