@@ -754,6 +754,9 @@ final class MiMallocByteBufAllocator {
         long lastHeapNormalCollectNano = System.nanoTime();
         // Set once the heap is abandoned: its empty segments are freed rather than cached.
         boolean abandoned;
+        // A local free emptied a page since the last collect: the page waits in its queue (see `freeBlockLocal`).
+        // Written in the heap critical section, like the page queues.
+        boolean hasEmptyPages;
 
         LocalHeapFields(MiMallocByteBufAllocator allocator, SharedHeapWrap sharedHeapWrap) {
             this.segmentTld = new SegmentTld();
@@ -857,7 +860,10 @@ final class MiMallocByteBufAllocator {
             // Free all current thread's delayed blocks.
             // If during abandoning, after this, there are no more thread-delayed references into the pages.
             heapDelayedFreeAll();
-            // Collect all pages owned by this thread.
+            // Collect all pages owned by this thread (a collect, whatever the collect type: the page mark above is
+            // a visit of its own): this frees every empty page, also those the delayed frees above just emptied,
+            // so none is left for `heapFreeEmptyPages`.
+            this.hasEmptyPages = false;
             heapVisitPages(collectType, VISIT_TYPE_PAGE_COLLECT);
             // Collect abandoned segments.
             boolean isCollectAllAbandoned = collectType == FORCE;
@@ -1321,16 +1327,41 @@ final class MiMallocByteBufAllocator {
             return page;
         }
 
+        // Returns true if it freed or may have freed a span: the caller then looks for one again.
         private boolean tryCollectBeforeNewSegment() {
             long now = System.nanoTime();
             // Collect at once when other threads freed blocks into this heap since the delayed list was last taken
             // (they wait in it), as those may free a large enough span; otherwise not more often than the interval.
-            if (threadDelayedFreeList.get() == null
-                    && now - lastHeapNormalCollectNano < SEGMENT_ALLOC_COLLECT_NANOS_INTERVAL) {
-                return false;
+            if (threadDelayedFreeList.get() != null
+                    || now - lastHeapNormalCollectNano >= SEGMENT_ALLOC_COLLECT_NANOS_INTERVAL) {
+                heapCollectNormal(now);
+                return true;
             }
-            heapCollectNormal(now);
-            return true;
+            // Within the interval, still free the pages that local frees emptied since the last collect, for example
+            // when the live set moves from one size class to another: their spans can hold the new pages, and the heap
+            // takes no new segment for them. Only these pages: not the rest of a collect.
+            return hasEmptyPages && heapFreeEmptyPages();
+        }
+
+        // Frees the empty pages that wait in their queues (see `freeBlockLocal`). Returns true if it freed any.
+        private boolean heapFreeEmptyPages() {
+            this.hasEmptyPages = false;
+            boolean freed = false;
+            // Not the full queue: an empty page never stays there (see `heapVisitPages`).
+            for (int i = 1; i < PAGE_QUEUE_BIN_FULL_INDEX; i++) {
+                PageQueue pq = this.pageQueues[i];
+                Page page = pq.firstPage;
+                while (page != null) {
+                    Page next = page.nextPage; // Saved: the page is removed from the queue if freed.
+                    // `usedBlocks` counts the blocks in the thread-free list too: 0 means no block is pending there.
+                    if (page.usedBlocks == 0) {
+                        pageFree(page, pq);
+                        freed = true;
+                    }
+                    page = next;
+                }
+            }
+            return freed;
         }
 
         private Page segmentsPageAlloc(int requiredSize, int blockSize) {
@@ -2338,10 +2369,12 @@ final class MiMallocByteBufAllocator {
                 this.localFreeList = block;
             }
             // An empty page is not freed (retired) here, except a large page, see below.
-            // Empty pages stay in their queue for reuse, and the next heap collect frees them.
+            // Empty pages stay in their queue for reuse, and the next heap collect frees them, or the heap before it
+            // takes a new segment (`tryCollectBeforeNewSegment`).
             --this.usedBlocks;
             assert this.usedBlocks >= 0;
             if (this.usedBlocks == 0) {
+                heap.hasEmptyPages = true;
                 heap.ensureIdleTick();   // an empty page waits for a collect
             }
             assert !this.isInFull || this.capacityBlocks == this.reservedBlocks;
