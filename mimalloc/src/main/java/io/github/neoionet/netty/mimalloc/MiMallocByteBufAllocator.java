@@ -1341,9 +1341,11 @@ final class MiMallocByteBufAllocator {
                 heapCollectNormal(now);
                 return true;
             }
-            // Within the interval, still free the pages that local frees emptied since the last collect, for example
-            // when the live set moves from one size class to another: their spans can hold the new pages, and the heap
-            // takes no new segment for them. Only these pages: not the rest of a collect.
+            // Within the interval, still free the pages that local frees emptied since the last collect (but the first
+            // page of each queue, see `heapFreeEmptyPages`), for example when the live set moves from one size class to
+            // another: their spans can hold the new pages, and the heap takes no new segment for them. This frees only
+            // these pages, and only reads the counts: it does not collect the thread-free lists of the pages or the
+            // abandoned segments, which is what the interval limits.
             return hasEmptyPages && heapFreeEmptyPages();
         }
 
